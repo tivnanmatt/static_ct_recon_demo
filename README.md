@@ -512,6 +512,61 @@ The frontend should be available at `http://localhost:5173`.
 4. **Deep Recon and Generative Recon:** Add learned reconstruction algorithms.
 5. **Demo-Ready System:** Prepare for reliable hands-on demonstration.
 
+## Windows Kiosk Mode
+
+The Windows NUC can launch the app in full-screen browser mode for a dedicated "appliance" feel.
+
+**Example PowerShell script (`launch_kiosk.ps1`):**
+
+```powershell
+$AppUrl = "http://localhost:5173" # Or the remote URL if served from axis03
+
+# Launch Microsoft Edge in Kiosk Mode
+Start-Process "msedge.exe" -ArgumentList "--kiosk $AppUrl --edge-kiosk-type=fullscreen --no-first-run"
+
+# Alternative: Google Chrome
+# Start-Process "chrome.exe" -ArgumentList "--kiosk $AppUrl --no-first-run"
+```
+
+For a permanent installation, this script can be added to the Windows Startup folder (`shell:startup`).
+
+## Networking and Port Forwarding
+
+The demo system involves communication between the Windows NUC (client) and the `axis03` Linux GPU server (backend).
+
+### 1. Container to Host (`axis03`)
+The backend FastAPI server runs inside a Docker container. We map the container's internal port to the host:
+- **FastAPI Backend:** Container port `8000` -> `axis03:8000`
+- **Vite Frontend (if containerized):** Container port `5173` -> `axis03:5173`
+
+In `docker-compose.yml`:
+```yaml
+services:
+  backend:
+    ports:
+      - "8000:8000"
+  frontend:
+    ports:
+      - "5173:5173"
+```
+
+### 2. Host (`axis03`) to NUC Client
+There are two primary ways to connect the NUC to the services on `axis03`:
+
+**Option A: Direct Local Network Access (Recommended)**
+If the NUC and `axis03` are on the same local network, the NUC can access the services directly using the server's IP address:
+- **Frontend:** `http://<axis03-ip>:5173`
+- **Backend API:** `http://<axis03-ip>:8000`
+
+**Option B: SSH Tunneling (If network access is restricted)**
+If direct port access is blocked, use an SSH tunnel from the NUC to `axis03`. This makes the remote services appear as `localhost` on the NUC:
+
+On the Windows NUC (using PowerShell or Command Prompt):
+```bash
+ssh -L 5173:localhost:5173 -L 8000:localhost:8000 user@axis03
+```
+Now the NUC client can access the app at `http://localhost:5173`.
+
 ## License
 To be determined.
 
