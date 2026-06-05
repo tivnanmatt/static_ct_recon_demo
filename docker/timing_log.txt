@@ -1,0 +1,29 @@
+DEBUG: Initializing SimulationManager (Warmup)...
+DEBUG: Warmup (Loading weights)...
+DEBUG: Starting Projector Warmup for 240 sources...
+DEBUG: Building 240 View Projectors...
+DEBUG: Building Full Static Projector for all 240 views...
+DEBUG: Computing Normalization map for 240 sources...
+DEBUG: Running timing tests...
+DEBUG: Full (Uniform): 0.13ms | One View: 2.97ms
+Warmup/Load time: 11.431s
+Single View Forward Projection (CUDA): 0.24ms
+Image Rendering (Matplotlib + b64): 117.47ms
+
+Starting Detailed Loop Benchmark (10 views):
+  View 00: Proj=   0.3ms | GeoRender= 141.8ms | SinoRender=  71.3ms | Total= 213.4ms
+  View 01: Proj=   0.4ms | GeoRender= 110.3ms | SinoRender=  61.8ms | Total= 172.6ms
+  View 02: Proj=   0.3ms | GeoRender= 142.0ms | SinoRender=  59.0ms | Total= 201.3ms
+  View 03: Proj=   0.4ms | GeoRender= 108.4ms | SinoRender=  60.8ms | Total= 169.7ms
+  View 04: Proj=   0.3ms | GeoRender= 108.7ms | SinoRender=  61.9ms | Total= 170.8ms
+  View 05: Proj=   0.3ms | GeoRender= 145.2ms | SinoRender=  60.1ms | Total= 205.6ms
+  View 06: Proj=   0.4ms | GeoRender= 108.3ms | SinoRender=  59.6ms | Total= 168.4ms
+  View 07: Proj=   0.3ms | GeoRender= 141.9ms | SinoRender=  59.7ms | Total= 201.9ms
+  View 08: Proj=   0.5ms | GeoRender= 107.7ms | SinoRender=  60.8ms | Total= 169.0ms
+  View 09: Proj=   0.3ms | GeoRender= 108.5ms | SinoRender=  60.7ms | Total= 169.6ms
+
+Average Loop Cycle: 184.2ms
+Bottleneck: Matplotlib (Rendering)
+
+Average time per view: 184.2ms
+Estimated rate: 5.4 views/sec

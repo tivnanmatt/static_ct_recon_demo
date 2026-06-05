@@ -1,33 +1,36 @@
-version: '3.8'
+name: recon-web-server
 
 services:
-  backend:
+  recon-web-server:
+    image: recon-web-server:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: backend
-    ports:
-      - "8000:8000"
+      network: host
+      args:
+        - USER_ID=${LOCAL_UID:-1000}
+        - GROUP_ID=${LOCAL_GID:-1000}
+    container_name: recon-web-server
+    # Use host network to match development environment performance and connectivity
+    network_mode: host
+    volumes:
+      - ../backend:/app/backend
+      - /home/staticct/matt/workspace:/workspace
+      - /home/staticct/data:/data:rslave
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:/ct_laboratory
+      - NVIDIA_VISIBLE_DEVICES=all
+    runtime: nvidia
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
-    volumes:
-      - ../backend:/app/backend
-    environment:
-      - PYTHONUNBUFFERED=1
+              capabilities: [gpu, utility, compute]
+    cpus: "6.0"
+    mem_limit: 64g
+    shm_size: "8g"
 
-  frontend:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      target: frontend
-    ports:
-      - "5173:80"
-    volumes:
-      - ../frontend/dist:/usr/share/nginx/html
-    depends_on:
-      - backend
