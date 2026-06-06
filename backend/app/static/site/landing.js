@@ -1133,7 +1133,7 @@ async function runGenerativeVisionRecon(progressBar, statusText, nextButton, con
     const sigmaMax = HU_to_atten(sigmaMaxHU, true);
     const sigmaMin = HU_to_atten(sigmaMinHU, true);
 
-    const solver = document.getElementById('diffusion-solver-select').value;
+    const solver = document.querySelector('input[name="diffusion-solver"]:checked')?.value || 'heun';
 
     const numSamples = parseInt(document.getElementById('num-samples-slider')?.value || '4');
     const langevinSteps = parseInt(document.getElementById('langevin-steps-slider')?.value || '100');
@@ -1336,20 +1336,11 @@ window.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // Setup Display Mode Toggle Buttons (A, B, C)
-    const modeButtons = document.querySelectorAll('.display-mode-btn');
-    modeButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            modeButtons.forEach(b => {
-                b.classList.remove('active');
-                b.style.background = 'rgba(255, 255, 255, 0.1)';
-                b.style.borderColor = 'rgba(255, 255, 255, 0.2)';
-            });
-            btn.classList.add('active');
-            btn.style.background = '#005cbb';
-            btn.style.borderColor = '#005cbb';
-            
-            currentDisplayMode = btn.getAttribute('data-mode') || 'sample';
+    // Setup Display Mode Toggle via Radio Buttons (A, B, C)
+    const modeRadios = document.querySelectorAll('input[name="display-mode"]');
+    modeRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+            currentDisplayMode = radio.value;
             console.log(`DEBUG [Generative]: Switched display mode to ${currentDisplayMode}`);
             updateDisplay();
         });

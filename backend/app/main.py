@@ -1278,8 +1278,8 @@ LANDING_HTML = """
                     </div>
 
                     <div class="control-panel-wrapper">
-                        <!-- Control Panel (Full Width) -->
-                        <div class="control-panel">
+                        <!-- Control Panel (Full Width and Compact Grid layout) -->
+                        <div class="control-panel compact-generative-panel">
                             <!-- Slider Section inside Control Panel -->
                             <div class="control-rows-container">
                                 <div class="control-row">
@@ -1289,10 +1289,16 @@ LANDING_HTML = """
                                 </div>
                                 <div class="control-row">
                                     <label>Solver Mode</label>
-                                    <select id="diffusion-solver-select">
-                                        <option value="heun">Heun (2nd Order)</option>
-                                        <option value="euler">Euler (1st Order)</option>
-                                    </select>
+                                    <div class="radio-group-horizontal-compact">
+                                        <label class="compact-radio-label">
+                                            <input type="radio" name="diffusion-solver" value="heun" checked>
+                                            <span>Heun</span>
+                                        </label>
+                                        <label class="compact-radio-label">
+                                            <input type="radio" name="diffusion-solver" value="euler">
+                                            <span>Euler</span>
+                                        </label>
+                                    </div>
                                     <span></span>
                                 </div>
                                 <div class="control-row">
@@ -1322,13 +1328,22 @@ LANDING_HTML = """
                                 </div>
                             </div>
 
-                            <!-- Display Mode Selector Segmented Buttons inside Control Panel -->
+                            <!-- Display Mode Multiple Choice Form inside Control Panel -->
                             <div class="display-mode-container">
                                 <label>Image Display Mode (Ensemble options when Num Samples > 1)</label>
-                                <div class="display-mode-buttons-row">
-                                    <button type="button" class="display-mode-btn active" id="btn-mode-sample" data-mode="sample">A) Generative Sample</button>
-                                    <button type="button" class="display-mode-btn" id="btn-mode-animation" data-mode="animation">B) Multi-Sample Animation</button>
-                                    <button type="button" class="display-mode-btn" id="btn-mode-mean" data-mode="mean">C) Generative Mean</button>
+                                <div class="radio-group-display-mode">
+                                    <label class="display-mode-card">
+                                        <input type="radio" name="display-mode" value="sample" checked>
+                                        <span class="card-text">A) Generative Sample</span>
+                                    </label>
+                                    <label class="display-mode-card">
+                                        <input type="radio" name="display-mode" value="animation">
+                                        <span class="card-text">B) Multi-Sample Animation</span>
+                                    </label>
+                                    <label class="display-mode-card">
+                                        <input type="radio" name="display-mode" value="mean">
+                                        <span class="card-text">C) Generative Mean</span>
+                                    </label>
                                 </div>
                             </div>
                         </div>

@@ -745,6 +745,97 @@ input[type="range"] {
     color: #fff;
 }
 
+/* Compact Generative Panel Styles */
+.compact-generative-panel {
+    padding: 0.75rem 1.25rem !important;
+    gap: 0.5rem !important;
+}
+
+.compact-generative-panel .control-rows-container {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.5rem 1.5rem !important;
+}
+
+.compact-generative-panel .control-row {
+    grid-template-columns: 130px 1fr 50px !important;
+    gap: 0.5rem !important;
+    align-items: center !important;
+}
+
+.radio-group-horizontal-compact {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    height: 28px;
+}
+
+.compact-radio-label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--arpa-h-primary-700);
+    cursor: pointer;
+}
+
+.compact-radio-label input[type="radio"] {
+    accent-color: var(--arpa-h-primary-700);
+    margin: 0;
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+}
+
+.radio-group-display-mode {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    width: 100%;
+    margin-top: 0.25rem;
+}
+
+.display-mode-card {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 8px 12px;
+    background: #fff;
+    border: 1px solid rgba(0, 27, 94, 0.15);
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--arpa-h-primary-700);
+    transition: all 0.2s ease-in-out;
+}
+
+.display-mode-card:hover {
+    background: rgba(0, 27, 94, 0.03);
+    border-color: rgba(0, 27, 94, 0.3);
+}
+
+.display-mode-card:has(input[type="radio"]:checked) {
+    background: rgba(0, 27, 94, 0.05);
+    border-color: var(--arpa-h-primary-700);
+    box-shadow: 0 0 0 1px var(--arpa-h-primary-700);
+}
+
+.display-mode-card input[type="radio"] {
+    accent-color: var(--arpa-h-primary-700);
+    margin: 0;
+    width: 14px;
+    height: 14px;
+}
+
+@media (max-width: 900px) {
+    .compact-generative-panel .control-rows-container {
+        grid-template-columns: 1fr !important;
+        gap: 0.5rem !important;
+    }
+}
+
 .progress-block {
     display: flex;
     flex-direction: row;
