@@ -574,7 +574,7 @@ body {
 
 .control-row {
     display: grid;
-    grid-template-columns: 140px 1fr auto;
+    grid-template-columns: 180px 1fr auto;
     align-items: center;
     gap: 1.5rem;
     width: 100%;
@@ -582,6 +582,10 @@ body {
 
 .control-row input[type="range"] {
     width: 100%;
+    height: 8px;
+    margin: 0;
+    accent-color: var(--arpa-h-primary-700);
+    cursor: pointer;
 }
 
 .slice-vitals {
@@ -609,12 +613,136 @@ body {
 
 .control-row label {
     font-weight: 600;
-    font-size: 1rem;
+    font-size: 0.95rem;
     color: var(--arpa-h-primary-700);
+    margin: 0;
+}
+
+.control-row span {
+    min-width: 50px;
+    font-weight: 700;
+    color: var(--arpa-h-primary-700);
+    font-size: 0.95rem;
+    text-align: right;
 }
 
 input[type="range"] {
     width: 100%;
+    height: 8px;
+    accent-color: var(--arpa-h-primary-700);
+    cursor: pointer;
+}
+
+/* Control Panel Wrappers for Stages */
+.control-panel-wrapper {
+    width: 100%;
+    margin-bottom: 1.5rem;
+}
+
+.control-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    background: rgba(0, 27, 94, 0.05); /* Soft ATS primary navy tint */
+    padding: 1.25rem;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 27, 94, 0.1);
+    justify-content: center;
+    width: 100%;
+}
+
+.control-rows-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+}
+
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    height: 20px;
+}
+
+.checkbox-container input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: var(--arpa-h-primary-700);
+    margin: 0;
+}
+
+.control-row select {
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: white;
+    border: 1px solid rgba(0, 27, 94, 0.2);
+    width: 100%;
+    font-size: 0.85rem;
+    height: 28px;
+    color: var(--arpa-h-primary-700);
+    margin: 0;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.slider-val-badge {
+    background: rgba(0, 27, 94, 0.08) !important;
+    color: var(--arpa-h-primary-700) !important;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-align: right;
+    min-width: 50px;
+    display: inline-block;
+}
+
+.display-mode-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    border-top: 1px solid rgba(0, 27, 94, 0.1);
+    padding-top: 0.75rem;
+    width: 100%;
+}
+
+.display-mode-container label {
+    color: var(--arpa-h-primary-700);
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+}
+
+.display-mode-buttons-row {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+}
+
+.display-mode-btn {
+    flex: 1;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 27, 94, 0.2);
+    background: rgba(0, 27, 94, 0.05);
+    color: var(--arpa-h-primary-700);
+    font-weight: bold;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s;
+    outline: none;
+    font-size: 0.75rem;
+}
+
+.display-mode-btn:hover {
+    background: rgba(0, 27, 94, 0.1);
+}
+
+.display-mode-btn.active {
+    border-color: var(--arpa-h-primary-700);
+    background: var(--arpa-h-primary-700);
+    color: #fff;
 }
 
 .progress-block {

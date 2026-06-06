@@ -1134,30 +1134,30 @@ LANDING_HTML = """
                         </div>
                     </div>
                     
-                    <div class="control-panel-wrapper" style="width: 100%; margin-bottom: 1.5rem;">
+                    <div class="control-panel-wrapper">
                         <!-- Control Panel (Full Width) -->
-                        <div class="control-panel" style="display: flex; flex-direction: column; gap: 0.6rem; background: rgba(0,0,0,0.1); padding: 1rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); justify-content: center; width: 100%;">
-                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">Iterations</label>
-                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="100" style="width: 100%; height: 10px; margin: 0;">
-                                <span id="iter-count-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.95rem; text-align: right;">100</span>
+                        <div class="control-panel">
+                            <div class="control-row">
+                                <label>Iterations</label>
+                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="100">
+                                <span id="iter-count-display">100</span>
                             </div>
-                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">TV Strength</label>
-                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="-2.5" style="width: 100%; height: 10px; margin: 0;">
-                                <span id="tv-strength-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.95rem; text-align: right;">0.003</span>
+                            <div class="control-row">
+                                <label>TV Strength</label>
+                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="-2.5">
+                                <span id="tv-strength-display">0.003</span>
                             </div>
-                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">Step Size / LR</label>
-                                <input type="range" id="lr-slider" min="-8" max="1" step="0.25" value="-1" style="width: 100%; height: 10px; margin: 0;">
-                                <span id="lr-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.95rem; text-align: right;">0.1</span>
+                            <div class="control-row">
+                                <label>Step Size / LR</label>
+                                <input type="range" id="lr-slider" min="-8" max="1" step="0.25" value="-1">
+                                <span id="lr-display">0.1</span>
                             </div>
-                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">Eigen Precond.</label>
-                                <div style="display: flex; align-items: center; height: 10px;">
-                                    <input type="checkbox" id="use-precond-check" checked style="width: 20px; height: 20px; cursor: pointer; accent-color: #001b5e; margin: 0;">
+                            <div class="control-row">
+                                <label>Eigen Precond.</label>
+                                <div class="checkbox-container">
+                                    <input type="checkbox" id="use-precond-check" checked>
                                 </div>
-                                <span style="min-width: 45px;"></span>
+                                <span></span>
                             </div>
                         </div>
                     </div>
@@ -1256,58 +1256,58 @@ LANDING_HTML = """
                         </div>
                     </div>
 
-                    <div class="control-panel-wrapper" style="width: 100%; margin-bottom: 2rem;">
+                    <div class="control-panel-wrapper">
                         <!-- Control Panel (Full Width) -->
-                        <div class="control-panel" style="display: flex; flex-direction: column; gap: 0.5rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); justify-content: space-between; width: 100%;">
+                        <div class="control-panel">
                             <!-- Slider Section inside Control Panel -->
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem; width: 100%;">
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Diffusion Steps</label>
-                                    <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="50" style="width: 100%; height: 10px; margin: 0;">
-                                    <span id="diffusion-steps-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">50</span>
+                            <div class="control-rows-container">
+                                <div class="control-row">
+                                    <label>Diffusion Steps</label>
+                                    <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="50">
+                                    <span id="diffusion-steps-display" class="slider-val-badge">50</span>
                                 </div>
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Solver Mode</label>
-                                    <select id="diffusion-solver-select" style="padding: 4px 8px; border-radius: 6px; background: white; border: 1px solid #ccc; width: 100%; font-size: 0.85rem; height: 26px; color: #111; margin: 0;">
+                                <div class="control-row">
+                                    <label>Solver Mode</label>
+                                    <select id="diffusion-solver-select">
                                         <option value="heun">Heun (2nd Order)</option>
                                         <option value="euler">Euler (1st Order)</option>
                                     </select>
-                                    <span style="min-width: 45px;"></span>
+                                    <span></span>
                                 </div>
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Max Null Noise (HU)</label>
-                                    <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3" style="width: 100%; height: 10px; margin: 0;">
-                                    <span id="sigma-max-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">1000</span>
+                                <div class="control-row">
+                                    <label>Max Null Noise (HU)</label>
+                                    <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3">
+                                    <span id="sigma-max-display" class="slider-val-badge">1000</span>
                                 </div>
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Min Null Noise (HU)</label>
-                                    <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0" style="width: 100%; height: 10px; margin: 0;">
-                                    <span id="sigma-min-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">1</span>
+                                <div class="control-row">
+                                    <label>Min Null Noise (HU)</label>
+                                    <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0">
+                                    <span id="sigma-min-display" class="slider-val-badge">1</span>
                                 </div>
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Langevin Temp</label>
-                                    <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="0" style="width: 100%; height: 10px; margin: 0;">
-                                    <span id="diffusion-temperature-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">0.00</span>
+                                <div class="control-row">
+                                    <label>Langevin Temp</label>
+                                    <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="0">
+                                    <span id="diffusion-temperature-display" class="slider-val-badge">0.00</span>
                                 </div>
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Langevin Steps</label>
-                                    <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="100" style="width: 100%; height: 10px; margin: 0;">
-                                    <span id="langevin-steps-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">100</span>
+                                <div class="control-row">
+                                    <label>Langevin Steps</label>
+                                    <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="100">
+                                    <span id="langevin-steps-display" class="slider-val-badge">100</span>
                                 </div>
-                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
-                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Num Samples</label>
-                                    <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="4" style="width: 100%; height: 10px; margin: 0;">
-                                    <span id="num-samples-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">4</span>
+                                <div class="control-row">
+                                    <label>Num Samples</label>
+                                    <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="4">
+                                    <span id="num-samples-display" class="slider-val-badge">4</span>
                                 </div>
                             </div>
 
                             <!-- Display Mode Selector Segmented Buttons inside Control Panel -->
-                            <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 0.4rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 0.4rem;">
-                                <label style="color: #fff; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 2px;">Image Display Mode (Ensemble options when Num Samples > 1)</label>
-                                <div style="display: flex; gap: 8px;">
-                                    <button type="button" class="display-mode-btn active" id="btn-mode-sample" data-mode="sample" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #005cbb; background: #005cbb; color: #fff; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; outline: none; font-size: 0.75rem;">A) Generative Sample</button>
-                                    <button type="button" class="display-mode-btn" id="btn-mode-animation" data-mode="animation" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; outline: none; font-size: 0.75rem;">B) Multi-Sample Animation</button>
-                                    <button type="button" class="display-mode-btn" id="btn-mode-mean" data-mode="mean" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; outline: none; font-size: 0.75rem;">C) Generative Mean</button>
+                            <div class="display-mode-container">
+                                <label>Image Display Mode (Ensemble options when Num Samples > 1)</label>
+                                <div class="display-mode-buttons-row">
+                                    <button type="button" class="display-mode-btn active" id="btn-mode-sample" data-mode="sample">A) Generative Sample</button>
+                                    <button type="button" class="display-mode-btn" id="btn-mode-animation" data-mode="animation">B) Multi-Sample Animation</button>
+                                    <button type="button" class="display-mode-btn" id="btn-mode-mean" data-mode="mean">C) Generative Mean</button>
                                 </div>
                             </div>
                         </div>
