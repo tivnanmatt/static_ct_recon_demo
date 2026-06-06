@@ -899,9 +899,10 @@ async function runSimulationAnimation(progressBar, statusText, nextButton, contr
         }
 
         // Load Base Images
-        const [imgBase, imgSino] = await Promise.all([
+        const [imgBase, imgSino, imgMask] = await Promise.all([
             new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = `data:image/png;base64,${fullData.geometry_base}`; }),
-            new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = `data:image/png;base64,${fullData.sinogram_full}`; })
+            new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = `data:image/png;base64,${fullData.sinogram_full}`; }),
+            new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = `data:image/png;base64,${fullData.sinogram_mask}`; })
         ]);
 
         geoCanvas.width = imgBase.width;
@@ -951,8 +952,6 @@ async function runSimulationAnimation(progressBar, statusText, nextButton, contr
             const progress = (currentSource + 1) / totalSources;
 
             // Plot area boundaries (15% to 85% of figure width and height)
-            const plotLeft = 0.15 * sinoCanvas.width;
-            const plotWidth = 0.7 * sinoCanvas.width;
             const plotTop = 0.15 * sinoCanvas.height;
             const plotHeight = 0.7 * sinoCanvas.height;
 
@@ -960,8 +959,12 @@ async function runSimulationAnimation(progressBar, statusText, nextButton, contr
             const curtainHeight = (plotTop + plotHeight) - curtainTop;
 
             if (curtainHeight > 0) {
-                sinoCtx.fillStyle = 'black';
-                sinoCtx.fillRect(plotLeft, curtainTop, plotWidth, curtainHeight);
+                // Draw the transparent mask cropped so it only covers the unacquired part
+                sinoCtx.drawImage(
+                    imgMask,
+                    0, curtainTop, sinoCanvas.width, curtainHeight,  // source crop
+                    0, curtainTop, sinoCanvas.width, curtainHeight   // destination position
+                );
             }
 
             // Update Progress

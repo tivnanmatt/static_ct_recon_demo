@@ -304,12 +304,24 @@ async def simulate_full_forward(dataset_id: str, patient_id: str, slice_index: i
     ax_right.spines['right'].set_color('white')
 
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.3, facecolor='black')
+    fig.savefig(buf, format='png', facecolor='black')
     sino_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+
+    # Generate Sinogram Black Mask (Transparent except for solid black inside plot area)
+    fig_mask = Figure(figsize=(8, 8), dpi=100)
+    fig_mask.patch.set_alpha(0.0)
+    ax_mask = fig_mask.add_axes([0.15, 0.15, 0.7, 0.7])
+    ax_mask.imshow(0 * full_sino, cmap='gray', vmin=0.0, vmax=1.0, aspect='auto')
+    ax_mask.axis('off')
+
+    buf_mask = io.BytesIO()
+    fig_mask.savefig(buf_mask, format='png', facecolor='none', edgecolor='none')
+    mask_b64 = base64.b64encode(buf_mask.getvalue()).decode('utf-8')
 
     return {
         "geometry_base": geo_base_b64,
         "sinogram_full": sino_b64,
+        "sinogram_mask": mask_b64,
         "n_source": n_source
     }
 
@@ -862,7 +874,7 @@ async def get_full_sinogram_image(dataset_id: str, patient_id: str, slice_index:
     ax_right.spines['right'].set_color('white')
     
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.3, facecolor='black')
+    fig.savefig(buf, format='png', facecolor='black')
     plt.close(fig)
     buf.seek(0)
     img_b64 = base64.b64encode(buf.read()).decode('utf-8')
