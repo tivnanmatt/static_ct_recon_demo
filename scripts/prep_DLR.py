@@ -365,6 +365,9 @@ class SpectralFeatureBuilder:
 
         batch = images.shape[0]
         flat = images.reshape(batch, -1)
+        # print(f"DEBUG: project_batch_null flat shape: {flat.shape}, v shape: {self.v.shape}")
+        if flat.shape[1] == 0:
+             print(f"ERROR: project_batch_null got flat.shape[1]==0! images.shape={images.shape}")
         signal_flat = torch.matmul(torch.matmul(flat, self.v), self.vt)
         null_flat = flat - signal_flat
         projected = null_flat.reshape(batch, self.height, self.width) * self.fov_mask.unsqueeze(0)

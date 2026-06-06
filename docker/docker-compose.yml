@@ -21,14 +21,15 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app:/ct_laboratory
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=0
     runtime: nvidia
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
+              device_ids: ['0']
               capabilities: [gpu, utility, compute]
     cpus: "6.0"
     mem_limit: 64g

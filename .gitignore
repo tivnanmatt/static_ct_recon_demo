@@ -216,3 +216,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Static CT Clinical Reconstruction Demo Custom Ignores
+*.pt
+*.pth
+*.mat
+*.png
+*.gif
+*.jpg
+*.jpeg
+*.webp
+*.zip
+*.pdf
+*.tar.gz
+*.tgz
+*.log
+**/outputs/
+**/weight_cache/
+**/weights/
+*.pt.bak*
+*.pt.*
+**/logs/

@@ -128,6 +128,81 @@ const stageRunState = {
     'generative-ai-recon': { controller: null, jobId: null }
 };
 
+let currentX0List = null;
+let x0CycleInterval = null;
+
+let lastStreamData = null;
+let currentDisplayMode = 'sample'; // 'sample', 'animation', or 'mean'
+let animationCycleIdx = 0;
+
+// Permanent visual cycling timer at 12 fps (83ms) for Display Mode B (much faster, cinematic cycling)
+setInterval(() => {
+    if (lastStreamData) {
+        const M = (lastStreamData.x0_list && lastStreamData.x0_list.length) || 1;
+        if (M > 1) {
+            animationCycleIdx = (animationCycleIdx + 1) % M;
+            if (currentDisplayMode === 'animation') {
+                updateDisplay();
+            }
+        }
+    }
+}, 83);
+
+const globalUpdateImageView = (container, src) => {
+    if (!container) return;
+    let img = container.querySelector('img');
+    if (!img) {
+        container.innerHTML = '';
+        img = document.createElement('img');
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'contain';
+        img.style.backgroundColor = 'black';
+        container.appendChild(img);
+    }
+    img.src = src;
+};
+
+function updateDisplay() {
+    if (!lastStreamData) return;
+
+    const boxGt = document.getElementById('gen-box-gt');
+    const boxFbp = document.getElementById('gen-box-full-fbp');
+    const boxNullHat = document.getElementById('gen-box-null-hat');
+    const boxXt = document.getElementById('gen-box-xt');
+    const boxX0 = document.getElementById('gen-box-x0');
+
+    if (lastStreamData.gt) globalUpdateImageView(boxGt, lastStreamData.gt);
+    if (lastStreamData.full_fbp) globalUpdateImageView(boxFbp, lastStreamData.full_fbp);
+
+    const M = (lastStreamData.x0_list && lastStreamData.x0_list.length) || 1;
+
+    if (M <= 1 || currentDisplayMode === 'sample') {
+        // Option A: Single Sample Mode (Sample 0)
+        if (lastStreamData.null_hat) globalUpdateImageView(boxNullHat, lastStreamData.null_hat);
+        if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
+        if (lastStreamData.x0) globalUpdateImageView(boxX0, lastStreamData.x0);
+    } else if (currentDisplayMode === 'animation') {
+        // Option B: Multi-Sample Animation Mode (cycles through the batch samples)
+        const idx = animationCycleIdx % M;
+        const nullHatImg = (lastStreamData.null_hat_list && lastStreamData.null_hat_list[idx]) || lastStreamData.null_hat;
+        const xtImg = (lastStreamData.xt_list && lastStreamData.xt_list[idx]) || lastStreamData.xt;
+        const x0Img = (lastStreamData.x0_list && lastStreamData.x0_list[idx]) || lastStreamData.x0;
+
+        if (nullHatImg) globalUpdateImageView(boxNullHat, nullHatImg);
+        if (xtImg) globalUpdateImageView(boxXt, xtImg);
+        if (x0Img) globalUpdateImageView(boxX0, x0Img);
+    } else if (currentDisplayMode === 'mean') {
+        // Option C: Generative Mean Mode
+        if (lastStreamData.null_hat) globalUpdateImageView(boxNullHat, lastStreamData.null_hat);
+        if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
+
+        // Reconstruction should show the mean_x0 (which is the average posterior mean)
+        const meanX0Img = lastStreamData.mean_x0 || lastStreamData.x0;
+        if (meanX0Img) globalUpdateImageView(boxX0, meanX0Img);
+    }
+}
+
 // Persistent view settings
 let windowWidth = 350;
 let windowLevel = 50;
@@ -184,6 +259,7 @@ function stopStageRun(stage) {
     if (!state || !state.controller) return;
 
     if (state.jobId) {
+        // Use iterative stop for generative as well since they share the registry
         fetch(`/api/reconstruct/iterative/stop/${state.jobId}`, { method: 'POST' }).catch((error) => {
             console.warn(`Failed to request stop for ${stage}`, error);
         });
@@ -267,6 +343,10 @@ function buildIterativeJobId() {
     return `iter-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function buildGenerativeJobId() {
+    return `gen-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function updateWorkflowUI() {
     const sidebarSim = document.querySelector('[data-stage-button="simulate-ct-data"]');
     const sidebarRecons = document.querySelectorAll('[data-stage-button$="-recon"]');
@@ -341,6 +421,28 @@ function resetWorkflow() {
     if (timingFiltered) timingFiltered.textContent = '-- ms';
     if (gifLinkContainer) gifLinkContainer.style.display = 'none';
     if (gifLink) gifLink.href = '#';
+
+    // Clear cycle interval
+    if (x0CycleInterval) {
+        clearInterval(x0CycleInterval);
+        x0CycleInterval = null;
+    }
+    currentX0List = null;
+
+    // Reset Langevin walk controls
+    const walkCheckbox = document.getElementById('langevin-walk-checkbox');
+    const walkLabel = document.getElementById('langevin-walk-label');
+    if (walkCheckbox) {
+        walkCheckbox.checked = false;
+        walkCheckbox.disabled = true;
+        walkCheckbox.style.cursor = 'not-allowed';
+        walkCheckbox.style.opacity = '0.5';
+    }
+    if (walkLabel) {
+        walkLabel.style.cursor = 'not-allowed';
+        walkLabel.style.opacity = '0.5';
+        walkLabel.style.color = '#888';
+    }
     
     // Reset all progress fills and statuses
     document.querySelectorAll('[data-progress-fill]').forEach(fill => fill.style.width = '0%');
@@ -919,7 +1021,7 @@ async function runEigenFBPRecon(progressBar, statusText, nextButton, controller)
             timingUnfiltered.textContent = `${res.initial_time_ms.toFixed(1)} ms`;
         }
 
-        statusText.textContent = 'Applying 3072-mode sparse eigen filter...';
+        statusText.textContent = 'Applying 4096-mode sparse eigen filter...';
         progressBar.style.width = '70%';
         await sleep(600, signal);
 
@@ -927,7 +1029,7 @@ async function runEigenFBPRecon(progressBar, statusText, nextButton, controller)
             updateImageView(boxFiltered, res.final_image);
             timingFiltered.textContent = `${res.final_time_ms.toFixed(1)} ms`;
             progressBar.style.width = '100%';
-            statusText.textContent = '3072-mode Sparse Eigen FBP complete';
+            statusText.textContent = '4096-mode Sparse Eigen FBP complete';
             if (nextButton) nextButton.disabled = false;
         } else {
             statusText.textContent = 'EigenFBP final recon missing';
@@ -1028,39 +1130,48 @@ async function runGenerativeVisionRecon(progressBar, statusText, nextButton, con
 
     // Params from UI
     const steps = document.getElementById('diffusion-steps-slider').value;
-    const sigmaMax = document.getElementById('sigma-max-slider').value;
+    const sigmaMaxHU = Math.pow(10, parseFloat(document.getElementById('sigma-max-slider').value));
+    const sigmaMinHU = Math.pow(10, parseFloat(document.getElementById('sigma-min-slider').value));
+    const temperature = parseFloat(document.getElementById('diffusion-temperature-slider').value);
+    
+    // Convert HU std to attenuation std (scaleOnly=true)
+    const sigmaMax = HU_to_atten(sigmaMaxHU, true);
+    const sigmaMin = HU_to_atten(sigmaMinHU, true);
+
     const solver = document.getElementById('diffusion-solver-select').value;
 
-    const boxGt = document.getElementById('gen-box-gt');
-    const boxFbp = document.getElementById('gen-box-fbp');
-    const boxXt = document.getElementById('gen-box-xt');
-    const boxX0 = document.getElementById('gen-box-x0');
+    const numSamples = parseInt(document.getElementById('num-samples-slider')?.value || '4');
+    const langevinSteps = parseInt(document.getElementById('langevin-steps-slider')?.value || '100');
 
-    const updateImageView = (container, src) => {
-        if (!container) return;
-        container.innerHTML = '';
-        const img = document.createElement('img');
-        img.src = src;
-        img.style.width = '100%';
-        img.style.height = '100%';
-        img.style.objectFit = 'contain';
-        img.style.backgroundColor = 'black';
-        container.appendChild(img);
-    };
+    lastStreamData = null;
 
     try {
-        statusText.textContent = `Starting GenerativeVision Diffusion (${steps} steps, σ_max=${sigmaMax})...`;
+        const jobId = buildGenerativeJobId();
+        stageRunState['generative-ai-recon'].jobId = jobId;
+
+        console.log(`DEBUG [Generative]: Starting combined sampling with JobID: ${jobId}, steps=${steps}, numSamples=${numSamples}, langevinSteps=${langevinSteps}`);
+        statusText.textContent = `Starting GenerativeVision Diffusion (${steps} steps)...`;
         progressBar.style.width = '10%';
 
-        const streamUrl = `/api/reconstruct/generative/${selectedDataset}/${pId}/${sIdx}/${numSources}?steps=${steps}&sigma_max=${sigmaMax}&solver=${solver}&exposure_mas=${exposureMas}&ww=${windowWidth}&wl=${windowLevel}`;
+        const streamUrl = `/api/reconstruct/generative/${selectedDataset}/${pId}/${sIdx}/${numSources}?steps=${steps}&sigma_max=${sigmaMax}&sigma_min=${sigmaMin}&solver=${solver}&temperature=${temperature}&exposure_mas=${exposureMas}&ww=${windowWidth}&wl=${windowLevel}&job_id=${jobId}&num_samples=${numSamples}&langevin_steps=${langevinSteps}`;
         const response = await fetch(streamUrl, { signal });
+        if (!response.ok || !response.body) {
+            throw new Error(`Generative stream failed with HTTP ${response.status}`);
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         
         let chunkRemainder = '';
 
         while (true) {
-            const { value, done } = await reader.read();
+            let result;
+            try {
+                result = await reader.read();
+            } catch (e) {
+                console.warn("Stream interrupted during read", e);
+                break;
+            }
+            const { value, done } = result;
             if (done) break;
             
             const chunk = chunkRemainder + decoder.decode(value);
@@ -1072,20 +1183,26 @@ async function runGenerativeVisionRecon(progressBar, statusText, nextButton, con
                     try {
                         const data = JSON.parse(line.substring(6));
                         if (data.error) {
-                            statusText.textContent = "Error: " + data.error;
-                            break;
+                            console.error("Generative Backend Error:", data.error);
+                            throw new Error(data.error);
                         }
                         
-                        if (data.gt) updateImageView(boxGt, data.gt);
-                        if (data.fbp) updateImageView(boxFbp, data.fbp);
-                        if (data.xt) updateImageView(boxXt, data.xt);
-                        if (data.x0) updateImageView(boxX0, data.x0);
+                        lastStreamData = data;
+                        updateDisplay();
 
                         const progress = 10 + (data.step / data.total_steps) * 90;
                         progressBar.style.width = `${progress}%`;
-                        statusText.textContent = `Diffusion Sampling: Step ${data.step} / ${data.total_steps} (σ=${data.sigma.toFixed(3)})`;
+                        
+                        // Check if we are in the Langevin walk phase
+                        if (data.step > parseInt(steps)) {
+                            const langCurrStep = data.step - parseInt(steps);
+                            statusText.textContent = `Langevin Random Walk (at σ_min): Step ${langCurrStep} / ${langevinSteps} (σ_min = ${atten_to_HU(data.sigma, true).toFixed(2)} HU)`;
+                        } else {
+                            statusText.textContent = `Null-space diffusion: Step ${data.step} / ${data.total_steps} (σ=${atten_to_HU(data.sigma, true).toFixed(2)} HU)`;
+                        }
                     } catch (e) {
                         console.error("JSON Parse error in stream", e);
+                        throw e;
                     }
                 }
             }
@@ -1098,12 +1215,14 @@ async function runGenerativeVisionRecon(progressBar, statusText, nextButton, con
     } catch (e) {
         if (isAbortError(e)) {
             statusText.textContent = 'Sampling Stopped';
+            console.log("DEBUG [Generative]: Sampling aborted by user");
             return;
         }
         console.error(e);
-        statusText.textContent = 'Network Error during GenerativeVision';
+        statusText.textContent = `GenerativeVision failed: ${e.message || 'Network Error'}`;
     } finally {
         finishStageRun('generative-ai-recon', controller);
+        updateWorkflowUI();
     }
 }
 
@@ -1146,17 +1265,100 @@ window.addEventListener("DOMContentLoaded", () => {
     // --- STAGE 6: GENERATIVE VISION LISTENERS ---
     const genStepsSlider = document.getElementById('diffusion-steps-slider');
     const sigmaMaxSlider = document.getElementById('sigma-max-slider');
+    const sigmaMinSlider = document.getElementById('sigma-min-slider');
+    const tempSlider = document.getElementById('diffusion-temperature-slider');
 
     if (genStepsSlider) {
         genStepsSlider.addEventListener('input', (e) => {
             document.getElementById('diffusion-steps-display').textContent = e.target.value;
         });
     }
+    const formatSigma = (val) => {
+        if (val >= 100) return val.toFixed(0);
+        if (val >= 10) return val.toFixed(1);
+        if (val >= 1) return val.toFixed(2);
+        if (val >= 0.001) return val.toFixed(4);
+        return val.toExponential(1);
+    };
+
     if (sigmaMaxSlider) {
         sigmaMaxSlider.addEventListener('input', (e) => {
-            document.getElementById('sigma-max-display').textContent = e.target.value;
+            const minSlider = document.getElementById('sigma-min-slider');
+            if (minSlider && parseFloat(minSlider.value) > parseFloat(e.target.value)) {
+                minSlider.value = e.target.value;
+                const valHUMin = Math.pow(10, parseFloat(e.target.value));
+                document.getElementById('sigma-min-display').textContent = formatSigma(valHUMin);
+            }
+            const valHU = Math.pow(10, parseFloat(e.target.value));
+            document.getElementById('sigma-max-display').textContent = formatSigma(valHU);
         });
     }
+    if (sigmaMinSlider) {
+        sigmaMinSlider.addEventListener('input', (e) => {
+            const maxSlider = document.getElementById('sigma-max-slider');
+            if (maxSlider && parseFloat(e.target.value) > parseFloat(maxSlider.value)) {
+                e.target.value = maxSlider.value;
+            }
+            const valHU = Math.pow(10, parseFloat(e.target.value));
+            document.getElementById('sigma-min-display').textContent = formatSigma(valHU);
+        });
+    }
+    if (tempSlider) {
+        tempSlider.addEventListener('input', (e) => {
+            document.getElementById('diffusion-temperature-display').textContent = parseFloat(e.target.value).toFixed(2);
+        });
+    }
+
+    const langevinWalkCheck = document.getElementById('langevin-walk-checkbox');
+    if (langevinWalkCheck) {
+        langevinWalkCheck.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                // Trigger Langevin walk automatically by simulating click on run button
+                const runButton = document.querySelector('[data-run-button="generative-ai-recon"]');
+                if (runButton) {
+                    runButton.click();
+                }
+            } else {
+                // Abort the walk stream
+                stopStageRun('generative-ai-recon');
+            }
+        });
+    }
+
+    const langevinStepsSlider = document.getElementById('langevin-steps-slider');
+    if (langevinStepsSlider) {
+        langevinStepsSlider.addEventListener('input', (e) => {
+            const displayObj = document.getElementById('langevin-steps-display');
+            if (displayObj) displayObj.textContent = e.target.value;
+        });
+    }
+
+    const numSamplesSlider = document.getElementById('num-samples-slider');
+    if (numSamplesSlider) {
+        numSamplesSlider.addEventListener('input', (e) => {
+            const displayObj = document.getElementById('num-samples-display');
+            if (displayObj) displayObj.textContent = e.target.value;
+        });
+    }
+
+    // Setup Display Mode Toggle Buttons (A, B, C)
+    const modeButtons = document.querySelectorAll('.display-mode-btn');
+    modeButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            modeButtons.forEach(b => {
+                b.classList.remove('active');
+                b.style.background = 'rgba(255, 255, 255, 0.1)';
+                b.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            });
+            btn.classList.add('active');
+            btn.style.background = '#005cbb';
+            btn.style.borderColor = '#005cbb';
+            
+            currentDisplayMode = btn.getAttribute('data-mode') || 'sample';
+            console.log(`DEBUG [Generative]: Switched display mode to ${currentDisplayMode}`);
+            updateDisplay();
+        });
+    });
 
     // --- STAGE 4: ITERATIVE RECON LISTENERS ---
     const iterCountSlider = document.getElementById('iter-count-slider');

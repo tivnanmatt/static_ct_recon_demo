@@ -39,9 +39,15 @@ from prep_DLR import (  # noqa: E402
     exposure_mas_to_diffusion_time,
 )
 
-# Diffusion Constants
-SIGMA_MIN = 0.002
-SIGMA_MAX = 0.5
+def hu_to_atten(hu_std: float) -> float:
+    """Convert HU noise standard deviation to attenuation units std."""
+    return hu_std * MU_WATER_60KEV / 1000.0
+
+# Diffusion constants in attenuation units. The learned signal is the null component,
+# so keep sigma_data on the same HU-derived scale as sigma_min/sigma_max.
+SIGMA_DATA = hu_to_atten(100.0)
+SIGMA_MIN = hu_to_atten(1.0)   # 1 HU
+SIGMA_MAX = hu_to_atten(1000.0) # 1000 HU
 P_MEAN = -1.2
 P_STD = 1.2
 
@@ -97,7 +103,7 @@ def save_diffusion_checkpoint(
         "config": asdict(config),
         "metrics": metrics,
         "feature_channels": CHANNEL_DESCRIPTIONS,
-        "training_target_mode": "diffusion_null_only",
+        "training_target_mode": "edm_null_signal_denoising_score_matching",
     }
     torch.save(payload, checkpoint_path)
 
@@ -117,8 +123,8 @@ def sample_diffusion_batch(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Returns:
-        inputs: (B, 7, H, W) where placeholders are filled with current noisy state
-        targets: (B, 1, H, W) ground truth mu
+        inputs: (B, 7, H, W) where placeholders are filled with current noisy null state
+        target_null: (B, 1, H, W) ground truth null-space signal
         sigmas: (B, 1, 1, 1) sampled noise levels
         exposure_time_embedding: (B, 1, 1, 1) exposure-based time conditioning
     """
@@ -133,9 +139,8 @@ def sample_diffusion_batch(
     gt_mu = torch.stack(batch_mu, dim=0).unsqueeze(1) # (B, 1, H, W)
     exposures_torch = torch.tensor(exposures, device=device)
     
-    # 1. Project GT to Range/Null
+    # 1. Project GT to the learned null-space target.
     gt_null = builder.project_batch_null(gt_mu)
-    gt_range = gt_mu - gt_null
     
     # 2. Simulate Noisy measurements & FBP components
     # We do this per-sample because builder doesn't support batch measurement yet
@@ -154,16 +159,18 @@ def sample_diffusion_batch(
     meas_null = torch.stack(batch_meas_null, dim=0).unsqueeze(1)
     full_fbp = torch.stack(batch_full_fbp, dim=0).unsqueeze(1)
     
-    # 3. Sample Sigma (Log-normal distribution for training)
-    # sigma = exp(P_MEAN + P_STD * epsilon)
-    rnd_normal = torch.randn((batch_size, 1, 1, 1), device=device)
-    sigmas = torch.exp(P_MEAN + P_STD * rnd_normal)
-    sigmas = torch.clamp(sigmas, config.sigma_min, config.sigma_max)
+    # 3. Sample Sigma (Log-uniform distribution for training)
+    # Sampling sigmas uniformly in log-space: log_sigma ~ Uniform(log(sigma_min), log(sigma_max))
+    log_sigma_min = math.log(config.sigma_min)
+    log_sigma_max = math.log(config.sigma_max)
+    rnd_uniform = torch.rand((batch_size, 1, 1, 1), device=device)
+    log_sigmas = log_sigma_min + (log_sigma_max - log_sigma_min) * rnd_uniform
+    sigmas = torch.exp(log_sigmas)
     
     # 4. Null-space noise forward process
     noise_null = builder.project_batch_null(torch.randn_like(gt_mu))
     xt_null = gt_null + sigmas * noise_null
-    xt_full = gt_range + xt_null
+    xt_full = pinv + xt_null
     
     # 5. Construct inputs
     # Channel indices:
@@ -190,7 +197,7 @@ def sample_diffusion_batch(
     
     exposure_cond = exposure_mas_to_diffusion_time(exposures_torch)
     
-    return inputs, gt_mu, sigmas, exposure_cond
+    return inputs, gt_null, sigmas, exposure_cond
 
 def train_diffusion_epoch(
     model: nn.Module,
@@ -209,35 +216,39 @@ def train_diffusion_epoch(
     total_loss = 0.0
 
     for step_idx in range(1, steps + 1):
-        inputs, gt_mu, sigmas, exp_cond = sample_diffusion_batch(sampler, split, builder, config, config.batch_size, rng)
+        inputs, target_null, sigmas, exp_cond = sample_diffusion_batch(sampler, split, builder, config, config.batch_size, rng)
         
-        # We need a time embedding for the noise level sigma
-        # For simplicity in this first version, we'll combine it with exp_cond or use it as the main diffusion time
-        # Let's use log(sigma) as the "time" for the UNet bottlenecks
-        sigma_time = torch.log(sigmas.squeeze(-1).squeeze(-1))
+        # EDM Preconditioning constants
+        sigma_data = SIGMA_DATA
+        c_skip = sigma_data**2 / (sigmas**2 + sigma_data**2)
+        c_out = sigmas * sigma_data / (sigmas**2 + sigma_data**2).sqrt()
+        c_in = 1 / (sigmas**2 + sigma_data**2).sqrt()
+        c_noise = 0.25 * torch.log(sigmas)
         
-        # Concatenate exposure time and sigma time? Or just use sigma time and pass exposure as another channel if needed.
-        # DLRUNet currently takes (B, 1) time. Let's pass sigma_time.
-        
+        # EDM Loss Weighting
+        weight = (sigmas**2 + sigma_data**2) / (sigmas * sigma_data)**2
+
         with torch.set_grad_enabled(is_train):
-            # The model predicts the denoised image x0 (or the residual component)
-            # In our case, we want the model to predict the ground truth mu
-            # But the constraint is always in the null space
-            prediction = model(inputs, sigma_time)
+            # Precondition inputs: Only the noisy images (xt_null, xt_full) should be scaled by c_in?
+            # Actually, standard EDM applies c_in to the whole input image.
+            # In our case, the measurement-based FBP components are also "inputs" but they are not noisy in the same way.
+            # However, for simplicity and to follow the preconditioning spirit, let's scale the primary noisy images.
+            # Better yet, let's scale ALL attenuation-based channels (0, 1, 2, 3, 4) by c_in. 
+            # Channel 5 and 6 are coords, they should NOT be scaled.
             
-            # Tweedie-like target or direct x0 prediction?
-            # Standard EDM training: minimize weighted MSE between model(xt, sigma) and x0
-            # weight = (sigma^2 + sigma_data^2) / (sigma * sigma_data)^2
-            # Here sigma_data ~ 0.1 (typical value for medical images in mu domain)
-            sigma_data = 0.1
-            weight = (sigmas**2 + sigma_data**2) / (sigmas * sigma_data)**2
+            model_inputs = inputs.clone()
+            model_inputs[:, :5, ...] = model_inputs[:, :5, ...] * c_in
             
-            # Physics Constraint: The residual update must be in the null space
-            # Predicted x0 = xt + P_null(model(xt, sigma) - xt)
-            residual = builder.project_batch_null(prediction - inputs[:, 4:5, ...])
-            recon_x0 = inputs[:, 4:5, ...] + residual
+            # UNet predicts F_theta
+            # Pass c_noise as the "time" conditioning (flattened to (B,))
+            prediction = model(model_inputs, c_noise.flatten())
             
-            loss = (weight * (recon_x0 - gt_mu)**2).mean()
+            # EDM denoiser for the generated object: the null-space signal.
+            xt_null = inputs[:, 3:4, ...]
+            prediction_null = builder.project_batch_null(prediction)
+            denoised_null = builder.project_batch_null(c_skip * xt_null + c_out * prediction_null)
+
+            loss = (weight * (denoised_null - target_null)**2).mean()
 
             if is_train:
                 optimizer.zero_grad(set_to_none=True)
@@ -264,10 +275,16 @@ def main():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--reset-training", action="store_true")
     parser.add_argument("--base-channels", type=int, default=32)
+    parser.add_argument("--sigma-min-hu", type=float, default=1.0)
+    parser.add_argument("--sigma-max-hu", type=float, default=1000.0)
     args = parser.parse_args()
 
     device = torch.device(args.device)
     torch.cuda.set_device(device)
+
+    # Convert HU to attenuation
+    sigma_min = hu_to_atten(args.sigma_min_hu)
+    sigma_max = hu_to_atten(args.sigma_max_hu)
 
     for n_source in args.n_sources:
         dataset_id = CANONICAL_MODEL_NAMESPACE if len(args.datasets) > 1 else args.datasets[0]
@@ -288,7 +305,9 @@ def main():
             seed=42,
             base_channels=args.base_channels, # Bigger model for diffusion
             warmup_fraction=0.05,
-            min_lr_scale=0.1
+            min_lr_scale=0.1,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max
         )
 
         ensure_run_layout(config.dataset_id, config.n_source)

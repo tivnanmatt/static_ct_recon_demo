@@ -1,0 +1,46 @@
+{
+  "dataset_id": "abdomen",
+  "n_source": 80,
+  "device": "cuda:0",
+  "epochs": 50,
+  "train_steps_per_epoch": 8,
+  "val_steps_per_epoch": 2,
+  "batch_size": 16,
+  "learning_rate": 0.0001,
+  "weight_decay": 1e-05,
+  "checkpoint_every": 1,
+  "exposures_mas": [
+    1.0,
+    10.0,
+    100.0
+  ],
+  "val_fraction": 0.2,
+  "seed": 1337,
+  "base_channels": 32,
+  "air_weight": 1.0,
+  "soft_tissue_weight": 10.0,
+  "bone_weight": 1.0,
+  "warmup_fraction": 0.1,
+  "min_lr_scale": 0.1,
+  "feature_channels": [
+    "pinv_fbp_signal_only",
+    "measurement_null_component",
+    "full_fbp_signal_plus_null",
+    "diffusion_null_xt_placeholder",
+    "diffusion_total_xt_placeholder",
+    "coord_x_position",
+    "coord_y_position"
+  ],
+  "model_layout": {
+    "model_dir": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/abdomen/n_source_80",
+    "best_checkpoint": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/abdomen/n_source_80/best.pt",
+    "latest_checkpoint": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/abdomen/n_source_80/latest.pt",
+    "checkpoint_dir": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/abdomen/n_source_80/checkpoints",
+    "history": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/abdomen/n_source_80/history.jsonl"
+  },
+  "region_weights": {
+    "air": 1.0,
+    "soft_tissue": 10.0,
+    "bone": 1.0
+  }
+}

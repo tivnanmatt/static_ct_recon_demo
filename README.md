@@ -10,8 +10,11 @@ The application runs as a unified FastAPI/Uvicorn backend with a specialized fro
 - Precomputed-first dataset manifests for Head (CQ500), Thorax (LIDC), Abdomen (LIHC), and Pelvic (ACRIN).
 - Manifest validation that keeps one CT study and one CT series per patient selection, rejects coronal/sagittal views and LIHC scout/localizer series, and orders slices by physical slice position.
 - Slice preprocessing on a common `256 x 256` grid using DICOM pixel spacing to map into a `1.6 mm x 1.6 mm` in-plane reconstruction grid.
-- Shared sparse eigen filtering across the app and prep scripts using the combined SVD basis in `backend/app/api/simulation/weights`, currently `3 x 1024 = 3072` modes when the two extension files are present.
+- Shared sparse eigen filtering across the app and prep scripts using the combined SVD basis in `backend/app/api/simulation/weights`, currently `4 x 1024 = 4096` modes when the three extension files are present.
+## Recent Optimizations
 
+- **Complete SVD Eigenspace Expansion**: Successfully calculated and saved the final 1024 residual eigenvector extension blocks (Extension #3) for both `80`-view and `240`-view static CT geometries. This scales the combined projection basis to the maximum rank of 4096 components, delivering peak precision to the `4096-mode sparse eigen filter` reconstruction pipeline.
+- **Visual Kiosk Layout Overhaul**: Refactored the dashboard layout to compress visual elements for 50% TV zoom. Horizontally aligned control sliders with labels on the left to maximize vertical real estate. Placed loading bars, status text, and footer progress indicators horizontally directly next to the "Load Patient" and navigation buttons. Eliminated the bulky `.math-box` containers to configure control panels at a seamless full horizontal width.
 ## Data Preparation
 
 Refresh manifests and preview GIFs inside the container:

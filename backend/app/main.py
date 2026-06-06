@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import asyncio
 from pathlib import Path
 from threading import Event, Lock
 from typing import Dict, List, Optional
@@ -25,14 +26,14 @@ for repo_root in REPO_ROOT_CANDIDATES:
         sys.path.append(str(repo_root))
 
 from api.datasets import DATASET_REGISTRY
-from api.deep_learning.model_registry import get_best_checkpoint_path, get_run_config_path
+from api.deep_learning.model_registry import get_best_checkpoint_path, get_run_config_path, get_model_dir
 from api.simulation.projector import MU_WATER_60KEV, sim_manager
 from scripts.prep_DLR import DLRUNet, SpectralFeatureBuilder, exposure_mas_to_diffusion_time, predict_reconstruction
-from scripts.prep_diffusion_test import solve_heun_null_space, solve_euler_null_space
+from scripts.prep_diffusion_test import solve_heun_null_space, solve_euler_null_space, solve_langevin_walk_only, solve_combined_diffusion_langevin
 
 iterative_cancel_events: Dict[str, Event] = {}
 iterative_cancel_lock = Lock()
-dlr_runtime_cache: Dict[int, Dict[str, object]] = {}
+dlr_runtime_cache: Dict[tuple, Dict[str, object]] = {}
 dlr_runtime_lock = Lock()
 
 
@@ -55,28 +56,42 @@ def clear_iterative_cancel(job_id: Optional[str]) -> None:
         iterative_cancel_events.pop(job_id, None)
 
 
-def get_dlr_runtime_assets(n_source: int) -> Dict[str, object]:
+def get_dlr_runtime_assets(n_source: int, mode: str = "standard") -> Dict[str, object]:
+    cache_key = (n_source, mode)
     with dlr_runtime_lock:
-        cached = dlr_runtime_cache.get(n_source)
+        cached = dlr_runtime_cache.get(cache_key)
         if cached is not None:
             return cached
 
         checkpoint_dataset_id = "main"
         config_path = get_run_config_path(checkpoint_dataset_id, n_source)
-        checkpoint_path = get_best_checkpoint_path(checkpoint_dataset_id, n_source)
+
         if not config_path.exists():
             raise FileNotFoundError(f"Missing DLR config for n_source={n_source}: {config_path}")
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Missing DLR checkpoint for n_source={n_source}: {checkpoint_path}")
 
-        import json
         with config_path.open("r", encoding="utf-8") as handle:
             run_config = json.load(handle)
+
+        if mode == "generative":
+            checkpoint_path = get_model_dir(checkpoint_dataset_id, n_source) / f"diffusion_{n_source}.pt"
+            gen_config_path = get_model_dir(checkpoint_dataset_id, n_source) / f"diffusion_config_{n_source}.json"
+            if gen_config_path.exists():
+                with gen_config_path.open("r", encoding="utf-8") as ghandle:
+                    run_config.update(json.load(ghandle))
+        else:
+            checkpoint_path = get_best_checkpoint_path(checkpoint_dataset_id, n_source)
+            
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Missing DLR checkpoint for {mode} n_source={n_source}: {checkpoint_path}")
 
         device = sim_manager.device
         builder = SpectralFeatureBuilder(n_source, device=device)
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        model = DLRUNet(base_channels=int(run_config["base_channels"])).to(device)
+        
+        # Diffusion models might have different base_channels
+        base_channels = int(checkpoint.get("config", {}).get("base_channels", run_config["base_channels"]))
+        
+        model = DLRUNet(base_channels=base_channels).to(device)
         model.load_state_dict(checkpoint["model_state"])
         model.eval()
 
@@ -86,7 +101,7 @@ def get_dlr_runtime_assets(n_source: int) -> Dict[str, object]:
             "run_config": run_config,
             "checkpoint_path": checkpoint_path,
         }
-        dlr_runtime_cache[n_source] = cached
+        dlr_runtime_cache[cache_key] = cached
         return cached
 
 app = FastAPI(
@@ -95,6 +110,16 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     redoc_url=None,
 )
+
+@app.on_event("startup")
+def pre_warmup_all_projectors():
+    print("DEBUG [Startup]: Pre-warming all projectors (80 and 240 views)...")
+    try:
+        sim_manager._warmup_projectors(80)
+        sim_manager._warmup_projectors(240)
+        print("DEBUG [Startup]: Projectors loaded successfully.")
+    except Exception as e:
+        print(f"DEBUG [Startup Error]: Failed to pre-warm projectors: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -411,7 +436,7 @@ async def reconstruct_dlr(dataset_id: str, patient_id: str, slice_index: int, n_
     if slice_index < 0 or slice_index >= len(slices):
         return {"error": "Slice index out of range"}
 
-    assets = get_dlr_runtime_assets(n_source)
+    assets = get_dlr_runtime_assets(n_source, mode="standard")
     builder = assets["builder"]
     model = assets["model"]
     device = sim_manager.device
@@ -592,21 +617,28 @@ async def stop_iterative(job_id: str):
 async def reconstruct_generative(
     request: Request,
     dataset_id: str, patient_id: str, slice_index: int, n_source: int,
-    steps: int = 20, sigma_max: float = 0.5, solver: str = "heun",
+    steps: int = 20, sigma_max: float = 0.5, sigma_min: float = 0.001, solver: str = "heun", temperature: float = 0.0,
     exposure_mas: float = 100.0,
-    ww: Optional[float] = None, wl: Optional[float] = None
+    ww: Optional[float] = None, wl: Optional[float] = None, job_id: Optional[str] = None,
+    num_samples: int = 4, langevin_steps: int = 100
 ):
     sino_key = (dataset_id, patient_id, slice_index, n_source)
     full_sino = sim_manager.get_sinogram(sino_key)
     if full_sino is None:
         return {"error": "Sinogram not found"}
 
+    # Use same cancel mechanism as iterative
+    cancel_event = register_iterative_cancel(job_id) if job_id else None
+
     async def event_generator():
+        import json
+        print(f"DEBUG [Generative]: Starting event_generator for {dataset_id}/{patient_id}/{slice_index} (Job: {job_id}, num_samples={num_samples}, langevin_steps={langevin_steps})")
         try:
             device = sim_manager.device
-            assets = get_dlr_runtime_assets(n_source)
+            assets = get_dlr_runtime_assets(n_source, mode="generative")
             model = assets["model"]
             builder = assets["builder"]
+            print(f"DEBUG [Generative]: Assets loaded. Device: {device}")
 
             # 1. Get GT for reference
             ds = DATASET_REGISTRY[dataset_id]
@@ -616,60 +648,144 @@ async def reconstruct_generative(
 
             # 2. Build Measurement Components
             comps = builder.build_measurement_components(gt_mu[0,0], i0=exposure_mas * 1e5)
-            
+            print("DEBUG [Generative]: Measurement components built.")
+
+            # Start from measured null-space FBP plus null-space noise. The range-space pinv is fixed.
+            pinv = comps["pinv"].unsqueeze(0).unsqueeze(0)
+            measurement_null = comps["measurement_null"].unsqueeze(0).unsqueeze(0)
+            full_fbp = comps["full_fbp"].unsqueeze(0).unsqueeze(0)
+
+            M = max(1, num_samples)
+
+            pinv_batched = pinv.repeat(M, 1, 1, 1)
+            measurement_null_batched = measurement_null.repeat(M, 1, 1, 1)
+            full_fbp_batched = full_fbp.repeat(M, 1, 1, 1)
+
+            noise_null = builder.project_batch_null(torch.randn_like(pinv_batched)) * sigma_max
+            xt_null_start = builder.project_batch_null(measurement_null_batched + noise_null)
+            xt_start = pinv_batched + xt_null_start
+
+            # BUILD INPUT STACK FOR SOLVER
+            # Channels: [pinv, meas_null, full_fbp, null_xt, total_xt, coord_x, coord_y]
+            inputs = builder.build_input_channels(comps).unsqueeze(0).repeat(M, 1, 1, 1)
+            inputs[:, 3:4, ...] = xt_null_start
+            inputs[:, 4:5, ...] = xt_start
+
             # W/L for UI
             target_ww = ww if ww is not None else ds.window_width
             target_wl = wl if wl is not None else ds.window_center
             win_min = target_wl - (target_ww / 2)
             win_max = target_wl + (target_ww / 2)
 
-            def to_b64(mu_tensor):
-                hu = mu_to_hu(mu_tensor.detach().cpu().numpy()[0,0])
+            def to_b64_index(mu_tensor, idx=0):
+                hu = mu_to_hu(mu_tensor.detach().cpu().numpy()[idx,0])
                 return base64.b64encode(encode_hu_png(hu, win_min, win_max)).decode('utf-8')
 
-            gt_b64 = "data:image/png;base64," + to_b64(gt_mu)
-            fbp_b64 = "data:image/png;base64," + to_b64(comps["full_fbp"].unsqueeze(0).unsqueeze(0))
+            def component_to_b64_index(component_tensor, idx=0):
+                hu = component_tensor.detach().cpu().numpy()[idx,0] * (1000.0 / MU_WATER_60KEV)
+                component_span = max(100.0, float(np.percentile(np.abs(hu), 99)))
+                return base64.b64encode(encode_hu_png(hu, -component_span, component_span)).decode('utf-8')
 
-            # Choose solver
-            solver_fn = solve_heun_null_space if solver == "heun" else solve_euler_null_space
-            
-            # Run solver as generator
-            gen = solver_fn(
-                model, 
-                builder,
-                builder.build_input_channels(comps).unsqueeze(0),
-                num_steps=steps, 
-                sigma_max=sigma_max, 
-                sigma_min=0.002, 
-                rho=7.0, 
+            def to_b64(mu_tensor):
+                return to_b64_index(mu_tensor, 0)
+
+            def component_to_b64(component_tensor):
+                return component_to_b64_index(component_tensor, 0)
+
+            gt_b64 = "data:image/png;base64," + to_b64(gt_mu)
+            pinv_b64 = "data:image/png;base64," + to_b64(pinv)
+            full_fbp_b64 = "data:image/png;base64," + to_b64(full_fbp)
+
+            # Choose solver - now uses unified combined solve
+            steps_computed = steps + langevin_steps
+            print(f"DEBUG [Generative]: Launching combined solver {solver} with steps_diff={steps}, steps_lang={langevin_steps}, sigma_max={sigma_max}, sigma_min={sigma_min}, temperature={temperature}")
+            gen = solve_combined_diffusion_langevin(
+                model=model,
+                builder=builder,
+                inputs=inputs,
+                num_steps_diff=steps,
+                num_steps_lang=langevin_steps,
+                sigma_max=sigma_max,
+                sigma_min=sigma_min,
+                rho=7.0,
+                temperature=temperature,
+                solver=solver,
                 device=device
             )
 
             for update in gen:
-                if await request.is_disconnected():
-                    print("DEBUG [Generative]: Request disconnected")
-                    break
-                
-                xt_b64 = "data:image/png;base64," + to_b64(update["xt"])
-                x0_b64 = "data:image/png;base64," + to_b64(update["x0"])
+                # BREAKING THE HEAVY GPU BLOCK
+                # Periodically check for disconnection and yield to the loop
+                if update["step"] % 1 == 0:
+                    if (cancel_event is not None and cancel_event.is_set()) or await request.is_disconnected():
+                        print(f"DEBUG [Generative]: Cancel requested or disconnected for job_id={job_id}")
+                        torch.cuda.empty_cache()
+                        break
+                    await asyncio.sleep(0.01)
+
+                if M > 1:
+                    null_hat_list = ["data:image/png;base64," + component_to_b64_index(update["null_hat"], b) for b in range(M)]
+                    xt_list = ["data:image/png;base64," + to_b64_index(update["xt"], b) for b in range(M)]
+                    x0_list = ["data:image/png;base64," + to_b64_index(update["x0"], b) for b in range(M)]
+                    
+                    mean_null_hat_tensor = update["null_hat"].mean(dim=0, keepdim=True)
+                    mean_xt_tensor = update["xt"].mean(dim=0, keepdim=True)
+                    mean_x0_tensor = update["x0"].mean(dim=0, keepdim=True)
+                    
+                    mean_null_hat_b64 = "data:image/png;base64," + component_to_b64(mean_null_hat_tensor)
+                    mean_xt_b64 = "data:image/png;base64," + to_b64(mean_xt_tensor)
+                    mean_x0_b64 = "data:image/png;base64," + to_b64(mean_x0_tensor)
+
+                    null_b64 = null_hat_list[0]
+                    xt_b64 = xt_list[0]
+                    x0_b64 = x0_list[0]
+                else:
+                    null_hat_list = None
+                    xt_list = None
+                    x0_list = None
+                    mean_null_hat_b64 = None
+                    mean_xt_b64 = None
+                    mean_x0_b64 = None
+                    null_b64 = "data:image/png;base64," + component_to_b64_index(update["null_hat"], 0)
+                    xt_b64 = "data:image/png;base64," + to_b64_index(update["xt"], 0)
+                    x0_b64 = "data:image/png;base64," + to_b64_index(update["x0"], 0)
                 
                 payload = {
                     'step': int(update['step']),
-                    'total_steps': int(steps),
+                    'total_steps': int(update.get('total_steps', steps_computed)),
                     'sigma': float(update['sigma']),
+                    'null_hat': null_b64,
                     'xt': xt_b64,
                     'x0': x0_b64,
                     'gt': gt_b64,
-                    'fbp': fbp_b64
+                    'pinv': pinv_b64,
+                    'full_fbp': full_fbp_b64,
+                    'null_hat_list': null_hat_list,
+                    'xt_list': xt_list,
+                    'x0_list': x0_list,
+                    'mean_null_hat': mean_null_hat_b64,
+                    'mean_xt': mean_xt_b64,
+                    'mean_x0': mean_x0_b64
                 }
                 msg = "data: " + json.dumps(payload) + "\n\n"
-                # print(f"DEBUG [Generative]: Yielding step {update['step']}") # Too noisy, but good to have commented
+                if update["step"] % 10 == 0 or update["step"] == 1:
+                    print(f"DEBUG [Generative]: Yielding Step {update['step']}/{steps_computed}, Sigma: {update['sigma']:.4f}")
                 yield msg
+                # Yielding control to the event loop
+                await asyncio.sleep(0.01)
+
+            print(f"DEBUG [Generative]: event_generator completed for {dataset_id}/{patient_id}/{slice_index}")
+            # Clean up after successful run
+            torch.cuda.empty_cache()
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+             print(f"DEBUG [Generative]: event_generator finished for {dataset_id}/{patient_id}/{slice_index}")
+             if job_id:
+                clear_iterative_cancel(job_id)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -737,13 +853,36 @@ LANDING_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>In-Silico Simulation and Reconstruction Demo</title>
+    <script>
+        // Constants for conversion (Water mu at 60keV)
+        const MU_WATER_60KEV = 0.0183;
+
+        /**
+         * Converts attenuation linear scale to Hounsfield Units (HU).
+         * For standard deviation (scale only), shifts are ignored.
+         */
+        function atten_to_HU(atten, scaleOnly = false) {
+            const hu = atten * (1000.0 / MU_WATER_60KEV);
+            return scaleOnly ? hu : hu - 1000.0;
+        }
+
+        /**
+         * Converts Hounsfield Units (HU) to attenuation linear scale.
+         * For standard deviation (scale only), shifts are ignored.
+         */
+        function HU_to_atten(hu, scaleOnly = false) {
+            const atten = scaleOnly ? hu : hu + 1000.0;
+            return atten * (MU_WATER_60KEV / 1000.0);
+        }
+    </script>
+    <title>CT Reconstruction Laboratory</title>
     <link rel="stylesheet" href="/static/site/landing.css">
 </head>
 <body>
     <main class="kiosk-shell">
-        <header class="page-header">
-            <h1 class="page-title">In-Silico Simulation and Reconstruction Demo</h1>
+        <header class="page-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem 2.5rem 1rem;">
+            <h1 class="page-title" style="margin: 0;">CT Reconstruction Laboratory</h1>
+            <img src="/static/branding/ats/logo-color.png" alt="Advanced Tomography Systems logo" style="height: 60px; object-fit: contain; flex: 0 0 auto;">
         </header>
 
         <section class="workflow-shell">
@@ -787,11 +926,9 @@ LANDING_HTML = """
             <section class="content">
                 <section class="stage-area">
                 <article class="stage-panel active" data-stage-panel="load-patient">
-                    <div class="stage-header">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <span class="stage-tag">Stage 1</span>
-                            <h2 class="stage-title">Load Patient</h2>
-                            <p class="stage-description">Select a dataset and patient to stage the downstream imaging workflow.</p>
+                            <h2 class="stage-title" style="margin: 0;">Load Patient</h2>
                         </div>
                     </div>
                     <div class="stage-figure-shell">
@@ -825,64 +962,68 @@ LANDING_HTML = """
                                 </div>
                             </button>
                         </div>
-                        <div class="selection-controls" id="patient-selection-controls" style="display: none;">
-                            <div class="metadata-panel">
-                                <h3>DICOM METADATA</h3>
-                                <div class="metadata-scroll-container">
-                                    <div id="dicom-metadata-text" class="metadata-dump"></div>
+                        <div class="selection-controls" id="patient-selection-controls" style="display: none; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+                            <!-- Top section: Patient/Slice Sliders next to DICOM metadata -->
+                            <div style="display: grid; grid-template-columns: 1.8fr 1fr; gap: 1.5rem; align-items: stretch; width: 100%;">
+                                <div class="controls-column" style="display: flex; flex-direction: column; gap: 1rem; justify-content: center;">
+                                    <div class="control-row">
+                                        <label>Patient</label>
+                                        <input type="range" id="patient-slider" min="0" max="0" value="0">
+                                        <span id="patient-id-display">N/A</span>
+                                    </div>
+                                    <div class="control-row">
+                                        <label>Axial Slice</label>
+                                        <input type="range" id="slice-slider" min="0" max="0" value="0">
+                                        <div class="slice-vitals">
+                                            <span id="slice-index-display">0</span>
+                                            <span class="vitals-separator">|</span>
+                                            <span id="slice-pos-display">0.0 mm</span>
+                                            <span class="vitals-separator">|</span>
+                                            <span id="slice-inst-display">Inst: 1</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="metadata-panel" style="max-height: 140px; min-height: 100px; padding: 0.8rem; margin: 0;">
+                                    <h3 style="margin: 0 0 0.4rem 0; font-size: 0.8rem;">DICOM METADATA</h3>
+                                    <div class="metadata-scroll-container" style="padding: 0.4rem; height: calc(100% - 1.2rem); overflow-y: auto;">
+                                        <div id="dicom-metadata-text" class="metadata-dump" style="font-size: 0.85rem; line-height: 1.4;"></div>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="control-row">
-                                <label>Patient</label>
-                                <input type="range" id="patient-slider" min="0" max="0" value="0">
-                                <span id="patient-id-display">N/A</span>
-                            </div>
-                            <div class="control-row">
-                                <label>Axial Slice</label>
-                                <input type="range" id="slice-slider" min="0" max="0" value="0">
-                                <div class="slice-vitals">
-                                    <span id="slice-index-display">0</span>
-                                    <span class="vitals-separator">|</span>
-                                    <span id="slice-pos-display">0.0 mm</span>
-                                    <span class="vitals-separator">|</span>
-                                    <span id="slice-inst-display">Inst: 1</span>
-                                </div>
-                            </div>
-                            <div class="control-row window-controls">
-                                <div class="slider-group">
-                                    <label>Window Width</label>
-                                    <input type="range" id="window-width-slider" min="1" max="2500" value="350">
-                                    <span id="ww-display">350</span>
-                                </div>
-                                <div class="slider-group">
+                            <!-- Bottom section: Window levels stacked vertically and matching widths -->
+                            <div style="display: flex; flex-direction: column; gap: 1rem; width: 100%; border-top: 1px solid rgba(0, 0, 0, 0.05); padding-top: 1rem;">
+                                <div class="control-row">
                                     <label>Window Level</label>
                                     <input type="range" id="window-level-slider" min="-1000" max="1500" value="50">
                                     <span id="wl-display">50</span>
+                                </div>
+                                <div class="control-row">
+                                    <label>Window Width</label>
+                                    <input type="range" id="window-width-slider" min="1" max="2500" value="350">
+                                    <span id="ww-display">350</span>
                                 </div>
                             </div>
                         </div>
                     </div>
                     <div class="stage-footer">
-                        <div class="progress-block">
-                            <div class="progress-label">Patient loading status</div>
-                            <div class="progress-track"><div class="progress-fill" data-progress-fill="load-patient"></div></div>
-                            <div class="progress-status" data-progress-status="load-patient">Idle</div>
-                        </div>
                         <div class="stage-actions">
                             <div class="action-group">
                                 <button class="button button-primary" id="load-patient-button" disabled type="button">Load Patient</button>
                                 <button class="button button-ghost" data-next-stage="load-patient" id="next-to-simulate" disabled type="button">Next: Simulate CT Data</button>
                             </div>
                         </div>
+                        <div class="progress-block">
+                            <div class="progress-label">Patient loading status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="load-patient"></div></div>
+                            <div class="progress-status" data-progress-status="load-patient">Idle</div>
+                        </div>
                     </div>
                 </article>
 
                 <article class="stage-panel" data-stage-panel="simulate-ct-data">
-                    <div class="stage-header">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <span class="stage-tag">Stage 2</span>
-                            <h2 class="stage-title">Simulate CT Data</h2>
-                            <p class="stage-description">Run one GPU forward projection and photon-noise simulation, then reuse that single sinogram for all downstream reconstructions while the UI plays a lightweight acquisition animation.</p>
+                            <h2 class="stage-title" style="margin: 0;">Simulate CT Data</h2>
                         </div>
                     </div>
                     <div class="stage-figure-shell">
@@ -902,10 +1043,7 @@ LANDING_HTML = """
                                         <option value="100" selected>100 mA (I0=1e7)</option>
                                     </select>
                                 </div>
-                                <div class="sim-note-card">
-                                    <div class="sim-note-title">Frontend Playback Plan</div>
-                                    <p>Next optimization: replace per-view matplotlib overlays with precomputed transparent PNG or GIF assets, coaligned to the patient image, while keeping the backend on a single full forward projection per simulation.</p>
-                                </div>
+                                
                                 <button class="button button-primary" data-run-button="simulate-ct-data" disabled type="button">Simulate CT Data</button>
                                 <button class="button button-stop" data-stop-button="simulate-ct-data" disabled type="button">Stop</button>
                             </div>
@@ -926,6 +1064,11 @@ LANDING_HTML = """
                         </div>
                     </div>
                     <div class="stage-footer">
+                        <div class="stage-actions">
+                            <div class="action-group">
+                                <button class="button button-ghost" data-next-stage="simulate-ct-data" disabled type="button">Next: EigenFBP</button>
+                            </div>
+                        </div>
                         <div class="progress-block">
                             <div class="progress-label">Simulation status</div>
                             <div class="progress-track"><div class="progress-fill" data-progress-fill="simulate-ct-data"></div></div>
@@ -934,20 +1077,13 @@ LANDING_HTML = """
                                 <a id="sim-gif-link" href="#" target="_blank" style="color: #0078d4; text-decoration: underline; font-weight: 500;">Download Simulation GIF</a>
                             </div>
                         </div>
-                        <div class="stage-actions">
-                            <div class="action-group">
-                                <button class="button button-ghost" data-next-stage="simulate-ct-data" disabled type="button">Next: EigenFBP</button>
-                            </div>
-                        </div>
                     </div>
                 </article>
 
                 <article class="stage-panel" data-stage-panel="eigen-fbp-recon">
-                    <div class="stage-header">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <span class="stage-tag">Stage 3</span>
-                            <h2 class="stage-title">EigenFBP</h2>
-                            <p class="stage-description">Compare normalized backprojection against a shared 3072-mode sparse eigen filter using the common SVD basis loaded by the prep scripts and the app server.</p>
+                            <h2 class="stage-title" style="margin: 0;">EigenFBP</h2>
                         </div>
                     </div>
                     <div class="stage-figure-shell">
@@ -970,61 +1106,59 @@ LANDING_HTML = """
                             <div class="recon-view">
                                 <label>EigenFBP</label>
                                 <div class="stage-figure-box" id="recon-box-filtered" aria-label="Filtered Recon"></div>
-                                <div class="timing-display" id="timing-filtered">3072-mode sparse eigen filter</div>
+                                <div class="timing-display" id="timing-filtered">4096-mode sparse eigen filter</div>
                             </div>
                         </div>
                     </div>
                     <div class="stage-footer">
-                        <div class="progress-block">
-                            <div class="progress-label">EigenFBP status</div>
-                            <div class="progress-track"><div class="progress-fill" data-progress-fill="eigen-fbp-recon"></div></div>
-                            <div class="progress-status" data-progress-status="eigen-fbp-recon">Idle</div>
-                        </div>
                         <div class="stage-actions">
                             <div class="action-group">
                                 <button class="button button-primary" data-run-button="eigen-fbp-recon" disabled type="button">Run EigenFBP</button>
                                 <button class="button button-stop" data-stop-button="eigen-fbp-recon" disabled type="button">Stop</button>
                                 <button class="button button-ghost" data-next-stage="eigen-fbp-recon" disabled type="button">Next: HighFidelityMBIR</button>
                             </div>
-                            <div class="stage-hint">The app and training prep share the combined SVD basis: base 1024 modes plus 2 extension blocks for a total rank of 3072.</div>
+                            <div class="stage-hint">The app and training prep share the combined SVD basis: base 1024 modes plus 3 extension blocks for a total rank of 4096.</div>
+                        </div>
+                        <div class="progress-block">
+                            <div class="progress-label">EigenFBP status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="eigen-fbp-recon"></div></div>
+                            <div class="progress-status" data-progress-status="eigen-fbp-recon">Idle</div>
                         </div>
                     </div>
                 </article>
 
                 <article class="stage-panel" data-stage-panel="model-based-iterative-recon">
-                    <div class="stage-header">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <span class="stage-tag">Stage 4</span>
-                            <h2 class="stage-title">HighFidelityMBIR</h2>
-                            <p class="stage-description">High-fidelity model-based iterative reconstruction using the shared sparse-eigen physics stack and EigenFBP initialization.</p>
+                            <h2 class="stage-title" style="margin: 0;">HighFidelityMBIR</h2>
                         </div>
                     </div>
                     
-                    <div class="control-grid" style="grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 2rem; background: rgba(0,0,0,0.2); padding: 1.5rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
-                        <div class="control-group">
-                            <label>Iterations</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="100" style="flex: 1;">
-                                <span id="iter-count-display" style="min-width: 30px; font-weight: 700; color: #001b5e;">100</span>
+                    <div class="control-panel-wrapper" style="width: 100%; margin-bottom: 1.5rem;">
+                        <!-- Control Panel (Full Width) -->
+                        <div class="control-panel" style="display: flex; flex-direction: column; gap: 0.6rem; background: rgba(0,0,0,0.1); padding: 1rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); justify-content: center; width: 100%;">
+                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">Iterations</label>
+                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="100" style="width: 100%; height: 10px; margin: 0;">
+                                <span id="iter-count-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.95rem; text-align: right;">100</span>
                             </div>
-                        </div>
-                        <div class="control-group">
-                            <label>TV Strength (log)</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="-2.5" style="flex: 1;">
-                                <span id="tv-strength-display" style="min-width: 65px; font-weight: 700; color: #001b5e;">0.003</span>
+                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">TV Strength</label>
+                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="-2.5" style="width: 100%; height: 10px; margin: 0;">
+                                <span id="tv-strength-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.95rem; text-align: right;">0.003</span>
                             </div>
-                        </div>
-                        <div class="control-group">
-                            <label>Step Size / LR (log)</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="lr-slider" min="-8" max="1" step="0.25" value="-1" style="flex: 1;">
-                                <span id="lr-display" style="min-width: 50px; font-weight: 700; color: #001b5e;">0.1</span>
+                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">Step Size / LR</label>
+                                <input type="range" id="lr-slider" min="-8" max="1" step="0.25" value="-1" style="width: 100%; height: 10px; margin: 0;">
+                                <span id="lr-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.95rem; text-align: right;">0.1</span>
                             </div>
-                        </div>
-                        <div class="control-group" style="display: flex; flex-direction: row; align-items: center; gap: 12px;">
-                            <label style="margin-bottom: 0;">Eigen Preconditioner</label>
-                            <input type="checkbox" id="use-precond-check" checked style="width: 20px; height: 20px; cursor: pointer; accent-color: #001b5e;">
+                            <div class="control-row" style="display: grid; grid-template-columns: 140px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                <label style="font-weight: 600; color: #001b5e; margin: 0; font-size: 0.95rem;">Eigen Precond.</label>
+                                <div style="display: flex; align-items: center; height: 10px;">
+                                    <input type="checkbox" id="use-precond-check" checked style="width: 20px; height: 20px; cursor: pointer; accent-color: #001b5e; margin: 0;">
+                                </div>
+                                <span style="min-width: 45px;"></span>
+                            </div>
                         </div>
                     </div>
 
@@ -1053,11 +1187,6 @@ LANDING_HTML = """
                         </div>
                     </div>
                     <div class="stage-footer">
-                        <div class="progress-block">
-                            <div class="progress-label">HighFidelityMBIR progress</div>
-                            <div class="progress-track"><div class="progress-fill" data-progress-fill="model-based-iterative-recon"></div></div>
-                            <div class="progress-status" data-progress-status="model-based-iterative-recon">Idle</div>
-                        </div>
                         <div class="stage-actions">
                             <div class="action-group">
                                 <button class="button button-primary" data-run-button="model-based-iterative-recon" disabled type="button">Run HighFidelityMBIR</button>
@@ -1065,15 +1194,18 @@ LANDING_HTML = """
                                 <button class="button button-ghost" data-next-stage="model-based-iterative-recon" disabled type="button">Next: NeuralSpeed</button>
                             </div>
                         </div>
+                        <div class="progress-block">
+                            <div class="progress-label">HighFidelityMBIR progress</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="model-based-iterative-recon"></div></div>
+                            <div class="progress-status" data-progress-status="model-based-iterative-recon">Idle</div>
+                        </div>
                     </div>
                 </article>
 
                 <article class="stage-panel" data-stage-panel="deep-learning-recon">
-                    <div class="stage-header">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <span class="stage-tag">Stage 5</span>
-                            <h2 class="stage-title">NeuralSpeed</h2>
-                            <p class="stage-description">Reuse the single simulated sinogram, build a Full FBP initialization once, then time only the final restoration step shown in the last panel.</p>
+                            <h2 class="stage-title" style="margin: 0;">NeuralSpeed</h2>
                         </div>
                     </div>
                     <div class="stage-figure-shell">
@@ -1101,11 +1233,6 @@ LANDING_HTML = """
                         </div>
                     </div>
                     <div class="stage-footer">
-                        <div class="progress-block">
-                            <div class="progress-label">NeuralSpeed status</div>
-                            <div class="progress-track"><div class="progress-fill" data-progress-fill="deep-learning-recon"></div></div>
-                            <div class="progress-status" data-progress-status="deep-learning-recon">Idle</div>
-                        </div>
                         <div class="stage-actions">
                             <div class="action-group">
                                 <button class="button button-primary" data-run-button="deep-learning-recon" disabled type="button">Run NeuralSpeed</button>
@@ -1114,71 +1241,104 @@ LANDING_HTML = """
                             </div>
                             <div class="stage-hint">The shared backprojection work is reused. The displayed final timing reflects only the restoration step after the Full FBP initialization is ready.</div>
                         </div>
+                        <div class="progress-block">
+                            <div class="progress-label">NeuralSpeed status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="deep-learning-recon"></div></div>
+                            <div class="progress-status" data-progress-status="deep-learning-recon">Idle</div>
+                        </div>
                     </div>
                 </article>
 
                 <article class="stage-panel" data-stage-panel="generative-ai-recon">
-                    <div class="stage-header">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <span class="stage-tag">Stage 6</span>
-                            <h2 class="stage-title">GenerativeVision</h2>
-                            <p class="stage-description">Conditional reverse diffusion sampling in the null-space for physically-consistent detail recovery and resolution enhancement.</p>
+                            <h2 class="stage-title" style="margin: 0;">GenerativeVision</h2>
                         </div>
                     </div>
 
-                    <div class="control-grid" style="grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 2rem; background: rgba(0,0,0,0.2); padding: 1.5rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
-                        <div class="control-group">
-                            <label>Diffusion Steps</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="20" style="flex: 1;">
-                                <span id="diffusion-steps-display" style="min-width: 30px; font-weight: 700; color: #001b5e;">20</span>
+                    <div class="control-panel-wrapper" style="width: 100%; margin-bottom: 2rem;">
+                        <!-- Control Panel (Full Width) -->
+                        <div class="control-panel" style="display: flex; flex-direction: column; gap: 0.5rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); justify-content: space-between; width: 100%;">
+                            <!-- Slider Section inside Control Panel -->
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem; width: 100%;">
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Diffusion Steps</label>
+                                    <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="50" style="width: 100%; height: 10px; margin: 0;">
+                                    <span id="diffusion-steps-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">50</span>
+                                </div>
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Solver Mode</label>
+                                    <select id="diffusion-solver-select" style="padding: 4px 8px; border-radius: 6px; background: white; border: 1px solid #ccc; width: 100%; font-size: 0.85rem; height: 26px; color: #111; margin: 0;">
+                                        <option value="heun">Heun (2nd Order)</option>
+                                        <option value="euler">Euler (1st Order)</option>
+                                    </select>
+                                    <span style="min-width: 45px;"></span>
+                                </div>
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Max Null Noise (HU)</label>
+                                    <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3" style="width: 100%; height: 10px; margin: 0;">
+                                    <span id="sigma-max-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">1000</span>
+                                </div>
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Min Null Noise (HU)</label>
+                                    <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0" style="width: 100%; height: 10px; margin: 0;">
+                                    <span id="sigma-min-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">1</span>
+                                </div>
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Langevin Temp</label>
+                                    <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="0" style="width: 100%; height: 10px; margin: 0;">
+                                    <span id="diffusion-temperature-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">0.00</span>
+                                </div>
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Langevin Steps</label>
+                                    <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="100" style="width: 100%; height: 10px; margin: 0;">
+                                    <span id="langevin-steps-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">100</span>
+                                </div>
+                                <div class="control-row" style="display: grid; grid-template-columns: 165px 1fr auto; align-items: center; gap: 1rem; width: 100%;">
+                                    <label style="font-weight: 600; color: #fff; font-size: 0.9rem; margin: 0;">Num Samples</label>
+                                    <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="4" style="width: 100%; height: 10px; margin: 0;">
+                                    <span id="num-samples-display" style="min-width: 45px; font-weight: 700; color: #001b5e; font-size: 0.9rem; text-align: right; background: rgba(255,255,255,0.9); padding: 2px 6px; border-radius: 4px;">4</span>
+                                </div>
                             </div>
-                        </div>
-                        <div class="control-group">
-                            <label>Noise Level (Sigma Max)</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="range" id="sigma-max-slider" min="0.1" max="1.0" step="0.1" value="0.5" style="flex: 1;">
-                                <span id="sigma-max-display" style="min-width: 30px; font-weight: 700; color: #001b5e;">0.5</span>
-                            </div>
-                        </div>
-                        <div class="control-group">
-                            <label>Solver Mode</label>
-                            <div style="display: flex; align-items: center; gap: 12px;">
-                                <select id="diffusion-solver-select" style="padding: 5px; border-radius: 4px; background: white; border: 1px solid #ccc;">
-                                    <option value="heun">Heun (2nd Order)</option>
-                                    <option value="euler">Euler (1st Order)</option>
-                                </select>
+
+                            <!-- Display Mode Selector Segmented Buttons inside Control Panel -->
+                            <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 0.4rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 0.4rem;">
+                                <label style="color: #fff; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 2px;">Image Display Mode (Ensemble options when Num Samples > 1)</label>
+                                <div style="display: flex; gap: 8px;">
+                                    <button type="button" class="display-mode-btn active" id="btn-mode-sample" data-mode="sample" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #005cbb; background: #005cbb; color: #fff; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; outline: none; font-size: 0.75rem;">A) Generative Sample</button>
+                                    <button type="button" class="display-mode-btn" id="btn-mode-animation" data-mode="animation" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; outline: none; font-size: 0.75rem;">B) Multi-Sample Animation</button>
+                                    <button type="button" class="display-mode-btn" id="btn-mode-mean" data-mode="mean" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; outline: none; font-size: 0.75rem;">C) Generative Mean</button>
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="stage-figure-shell">
-                        <div class="reconstruction-layout-grid">
+                        <div class="reconstruction-layout-grid-5">
                             <div class="recon-view">
                                 <label>Ground Truth</label>
                                 <div class="stage-figure-box" id="gen-box-gt"></div>
                             </div>
                             <div class="recon-view">
-                                <label>Full FBP Baseline</label>
-                                <div class="stage-figure-box" id="gen-box-fbp"></div>
+                                <label>Initial FBP (full)</label>
+                                <div class="stage-figure-box" id="gen-box-full-fbp"></div>
                             </div>
                             <div class="recon-view">
-                                <label>Noise-Augmented xt</label>
+                                <label>Predicted Null Residual</label>
+                                <div class="stage-figure-box" id="gen-box-null-hat"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>Generative Process</label>
                                 <div class="stage-figure-box" id="gen-box-xt"></div>
                             </div>
                             <div class="recon-view">
-                                <label>Tweedie Estimate (x0)</label>
+                                <label>Generative Reconstruction</label>
                                 <div class="stage-figure-box" id="gen-box-x0"></div>
                             </div>
                         </div>
                     </div>
 
                     <div class="stage-footer">
-                        <div class="progress-block">
-                            <div class="progress-label">GenerativeVision status</div>
-                            <div class="progress-track"><div class="progress-fill" data-progress-fill="generative-ai-recon"></div></div>
-                            <div class="progress-status" data-progress-status="generative-ai-recon">Idle</div>
-                        </div>
                         <div class="stage-actions">
                             <div class="action-group">
                                 <button class="button button-primary" data-run-button="generative-ai-recon" disabled type="button">Run GenerativeVision</button>
@@ -1186,6 +1346,11 @@ LANDING_HTML = """
                                 <a class="button button-ghost" href="/pong/">Open Pong Demo</a>
                             </div>
                             <div class="stage-hint">Reverse diffusion proceeds only in the null space. The measured range space is preserved at every step.</div>
+                        </div>
+                        <div class="progress-block">
+                            <div class="progress-label">GenerativeVision status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="generative-ai-recon"></div></div>
+                            <div class="progress-status" data-progress-status="generative-ai-recon">Idle</div>
                         </div>
                     </div>
                 </article>
@@ -1481,6 +1646,31 @@ PONG_HTML = """
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page():
+    # Dynamically extract LANDING_HTML from main.py on disk to support hot-reloading 
+    # the frontend UI on browser refresh without restarting the docker container,
+    # thereby keeping all warmed up GPU projection matrices in memory!
+    try:
+        import os
+        filepath = __file__
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+            start_marker = '\nLANDING_HTML = """'
+            start_idx = content.find(start_marker)
+            if start_idx == -1:
+                # Try fallback search without preceding newline
+                start_marker = 'LANDING_HTML = """'
+                start_idx = content.find(start_marker)
+            
+            if start_idx != -1:
+                start_idx += len(start_marker)
+                # Find the closing triple quotes
+                end_idx = content.find('"""', start_idx)
+                if end_idx != -1:
+                    dynamic_html = content[start_idx:end_idx]
+                    return HTMLResponse(content=dynamic_html)
+    except Exception as e:
+        print(f"DEBUG: Hot reloading LANDING_HTML failed: {e}")
     return HTMLResponse(content=LANDING_HTML)
 
 

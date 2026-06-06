@@ -47,7 +47,7 @@ body {
 
 .workflow-shell {
     display: grid;
-    grid-template-columns: 380px minmax(0, 1fr);
+    grid-template-columns: 180px minmax(0, 1fr);
     min-height: 0;
     overflow: hidden;
 }
@@ -266,6 +266,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    flex: 1; /* Stretch vertically inside parent container */
 }
 
 .dataset-grid {
@@ -273,6 +274,7 @@ body {
     grid-template-columns: repeat(4, 1fr);
     gap: 1rem;
     min-height: 0;
+    flex: 1; /* Expand grid vertically to fill the layout space */
 }
 
 .dataset-card {
@@ -285,6 +287,26 @@ body {
     transition: all 140ms ease;
     display: flex;
     flex-direction: column;
+    flex: 1; /* Allow cards to stretch vertically */
+    height: 100%; /* Fill parent flexbox/grid cells completely */
+    max-height: 650px; /* Allocated significantly more height as requested */
+}
+
+.dataset-preview {
+    width: 100%;
+    flex: 1; /* Let the preview container greedily take up all available upper card space */
+    min-height: 380px; /* Allocated much more height */
+    position: relative;
+    background-size: contain !important; /* Ensure fallback gif takes up full box without spilling or cutting off */
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+    background-color: #000;
+}
+
+.dataset-preview canvas {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important; /* Forces canvas images to stay within box bound & take maximum allowable size */
 }
 
 .dataset-card:hover {
@@ -409,11 +431,16 @@ body {
     align-items: center;
     justify-content: center;
     border: 2px solid #333;
+    width: 100%;
+    height: 100%;
 }
 
 .canvas-container canvas {
+    width: 100% !important;
+    height: 100% !important;
     max-width: 100%;
     max-height: 100%;
+    object-fit: contain !important; /* Scale dynamically to the full parent box height or width */
 }
 
 .control-group {
@@ -450,11 +477,11 @@ body {
 }
 
 .dataset-preview {
-    height: 380px; /* Increased from 160px for much larger visibility */
+    height: 100%; /* Support vertical expansion directly */
     background: #000;
     position: relative;
     overflow: hidden;
-    background-size: contain; /* Changed to contain to ensure full image square is visible */
+    background-size: cover; /* Changed to cover to ensure image spans entire card space */
     background-repeat: no-repeat;
     background-position: center;
 }
@@ -468,14 +495,14 @@ body {
     width: 100%;
     height: 100%;
     display: block;
-    object-fit: contain;
+    object-fit: cover; /* Fit completely to use the maximum size */
 }
 
 /* Placeholder for the sequence display class */
 .dataset-preview canvas {
     width: 100%;
     height: 100%;
-    object-fit: contain; /* Match the background-size contain */
+    object-fit: cover; /* Fit completely to use the maximum size */
 }
 
 .dataset-info {
@@ -591,19 +618,26 @@ input[type="range"] {
 }
 
 .progress-block {
-    display: grid;
-    gap: 0.35rem;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 1;
+    min-width: 250px;
+    margin: 0;
 }
 
 .progress-label {
     color: var(--arpa-h-primary-700);
     font-family: Arial, sans-serif;
-    font-size: 1rem;
+    font-size: 0.88rem;
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 .progress-track {
-    width: 100%;
-    height: 14px;
+    flex: 1;
+    height: 12px;
     border-radius: 999px;
     background: var(--scale-200);
     overflow: hidden;
@@ -620,20 +654,30 @@ input[type="range"] {
 .progress-status {
     color: var(--scale-700);
     font-family: Arial, sans-serif;
-    font-size: 0.84rem;
+    font-size: 0.82rem;
+    font-weight: 700;
+    min-width: 80px;
+    white-space: nowrap;
 }
 
 .stage-footer {
-    display: grid;
-    gap: 0.85rem;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    width: 100%;
+    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    padding-top: 0.75rem;
+    margin-top: auto;
 }
 
 .stage-actions {
     display: flex;
-    gap: 0.85rem;
-    justify-content: space-between;
-    align-items: end;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 0.4rem;
+    align-items: flex-start;
+    flex: 0 1 auto;
 }
 
 .action-group {
@@ -758,16 +802,36 @@ input[type="range"] {
     border-radius: 8px;
 }
 
+.sim-placeholder img, 
+.sim-placeholder canvas {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important; /* Scale to fill as large as possible */
+    border-radius: 8px;
+}
+
+/* Also ensure visual feedback within the simulation grid containers */
+.sim-display div {
+    width: 100%;
+    height: 100%;
+}
+
+.sim-display img {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important; /* Scale to fill the box entirely */
+}
+
 .brand-banner img.logo-ats {
-    height: 100px; /* Reduced further as requested */
-    margin: -24px 0; /* Proportional spill adjustment */
+    height: 56px; /* Restored to match standard image height */
+    margin: 0; /* No negative margins to avoid clipping and keep visible at 50% TV zoom */
     position: relative;
     z-index: 101;
 }
 
 .brand-banner img.logo-hms {
-    height: 86px; /* Reduced by 5% from 90px */
-    margin: -15px 0; /* Proportional spill adjustment */
+    height: 56px; /* Restored to match standard image height */
+    margin: 0; /* No negative margins to avoid clipping and keep visible at 50% TV zoom */
     position: relative;
     z-index: 101;
 }
@@ -829,6 +893,13 @@ input[type="range"] {
     width: 100%;
 }
 
+.reconstruction-layout-grid-5 {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    width: 100%;
+}
+
 .iterative-layout-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr) 0.5fr;
@@ -838,8 +909,18 @@ input[type="range"] {
     align-items: stretch;
 }
 
+@media (max-width: 1200px) {
+    .reconstruction-layout-grid-5 {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
 @media (max-width: 1024px) {
     .reconstruction-layout-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .reconstruction-layout-grid-5 {
         grid-template-columns: 1fr 1fr;
     }
 

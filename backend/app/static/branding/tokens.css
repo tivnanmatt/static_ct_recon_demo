@@ -1,0 +1,38 @@
+:root {
+    --arpa-h-primary-900: #000334;
+    --arpa-h-primary-700: #001B5E;
+    --arpa-h-primary-300: #52DAF2;
+    --arpa-h-primary-000: #FFFFFF;
+
+    /* User indicated previously supplied ARPA-H colors correspond to secondary and neutral palettes.
+       Those exact values are not currently present in the repo, so the named slots below remain
+       available for later extension when the full ARPA-H package is added. */
+    --arpa-h-secondary-placeholder: var(--arpa-h-primary-300);
+    --arpa-h-neutral-000: #ffffff;
+    --arpa-h-neutral-100: #f7f7f7;
+    --arpa-h-neutral-200: #e6e6e6;
+    --arpa-h-neutral-300: #d0d0d0;
+    --arpa-h-neutral-400: #b2b2b2;
+    --arpa-h-neutral-500: #8f8f8f;
+    --arpa-h-neutral-600: #6b6b6b;
+    --arpa-h-neutral-700: #4a4a4a;
+    --arpa-h-neutral-800: #2c2c2c;
+    --arpa-h-neutral-900: #171717;
+    --arpa-h-neutral-1000: #000000;
+
+    --ats-navy: #0d294c;
+    --ats-cyan: #009fe3;
+    --ats-grey: #b2b2b2;
+
+    --scale-white: #ffffff;
+    --scale-100: #f7f7f7;
+    --scale-200: #e6e6e6;
+    --scale-300: #d0d0d0;
+    --scale-400: #b2b2b2;
+    --scale-500: #8f8f8f;
+    --scale-600: #6b6b6b;
+    --scale-700: #4a4a4a;
+    --scale-800: #2c2c2c;
+    --scale-900: #171717;
+    --scale-black: #000000;
+}

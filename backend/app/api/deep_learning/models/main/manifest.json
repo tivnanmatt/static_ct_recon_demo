@@ -1,0 +1,40 @@
+{
+  "canonical_model_namespace": "main",
+  "main_models": {
+    "240": {
+      "checkpoint": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/main/n_source_240/main.pt",
+      "config": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/main/n_source_240/config.json",
+      "source_dataset_id": "thorax",
+      "status": "trained"
+    },
+    "80": {
+      "checkpoint": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/main/n_source_80/main.pt",
+      "config": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/main/n_source_80/config.json",
+      "source_dataset_id": "thorax",
+      "status": "trained"
+    }
+  },
+  "archived_dataset_specific_80_runs": [
+    {
+      "dataset_id": "abdomen",
+      "from": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/abdomen/n_source_80",
+      "to": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/archive/pre_main_cleanup/abdomen/n_source_80"
+    },
+    {
+      "dataset_id": "head",
+      "from": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/head/n_source_80",
+      "to": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/archive/pre_main_cleanup/head/n_source_80"
+    },
+    {
+      "dataset_id": "pelvic",
+      "from": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/pelvic/n_source_80",
+      "to": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/archive/pre_main_cleanup/pelvic/n_source_80"
+    },
+    {
+      "dataset_id": "thorax",
+      "from": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/thorax/n_source_80",
+      "to": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/archive/pre_main_cleanup/thorax/n_source_80"
+    }
+  ],
+  "removed_stale_backups": []
+}
