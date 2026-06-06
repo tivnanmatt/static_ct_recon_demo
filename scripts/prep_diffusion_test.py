@@ -241,10 +241,17 @@ def solve_combined_diffusion_langevin(
         device = inputs.device
 
     # --- PART 1: DIFFUSION PHASE ---
-    step_indices = torch.arange(num_steps_diff, device=device)
-    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps_diff - 1) * (
-        sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-    t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # Add t=0
+    if num_steps_lang > 0:
+        # If Langevin walk steps follow, the diffusion bridge/phase ends exactly at sigma_min.
+        step_indices = torch.arange(num_steps_diff + 1, device=device)
+        t_steps = (sigma_max ** (1 / rho) + step_indices / num_steps_diff * (
+            sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    else:
+        # If no Langevin walk, the diffusion phase proceeds all the way to t=0.0.
+        step_indices = torch.arange(num_steps_diff, device=device)
+        t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps_diff - 1) * (
+            sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+        t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # Add t=0
 
     null_state = builder.project_batch_null(inputs[:, 3:4, ...].clone())
     total_steps = num_steps_diff + num_steps_lang
