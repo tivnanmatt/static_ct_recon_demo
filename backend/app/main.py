@@ -272,11 +272,39 @@ async def simulate_full_forward(dataset_id: str, patient_id: str, slice_index: i
     from matplotlib.figure import Figure
 
     fig = Figure(figsize=(8, 8), dpi=100)
-    ax = fig.add_subplot(111)
+    fig.patch.set_facecolor('black')
+    ax = fig.add_axes([0.15, 0.15, 0.7, 0.7])
     ax.imshow(full_sino, cmap='gray', vmin=0.0, vmax=8.0, aspect='auto')
-    ax.axis('off')
+
+    # Draw Axes with visible tick labels representing:
+    # y-axis (Sources, increasing downward)
+    # x-axis (Detector Columns)
+    ax.set_xlabel("Detector Column Index", color='white', fontsize=12)
+    ax.set_ylabel("Source Index (Increasing Downward)", color='white', fontsize=12)
+    ax.tick_params(colors='white', which='both', labelsize=10)
+    ax.spines['bottom'].set_color('white')
+    ax.spines['top'].set_color('white')
+    ax.spines['left'].set_color('white')
+    ax.spines['right'].set_color('white')
+
+    # Add Twin X and Twin Y Axes for Angles
+    # Target range: Source Angles and Detector Angles from 0 to 360 degrees
+    # Set secondary X axis on top
+    ax_top = ax.twiny()
+    ax_top.set_xlim(0, 360)
+    ax_top.set_xlabel("Detector Angle (Degrees)", color='white', fontsize=12)
+    ax_top.tick_params(colors='white', which='both', labelsize=10)
+    ax_top.spines['top'].set_color('white')
+
+    # Set secondary Y axis on right
+    ax_right = ax.twinx()
+    ax_right.set_ylim(360, 0) # Increasing downward to match source indices
+    ax_right.set_ylabel("Source Angle (Degrees)", color='white', fontsize=12)
+    ax_right.tick_params(colors='white', which='both', labelsize=10)
+    ax_right.spines['right'].set_color('white')
+
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, facecolor='black')
+    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.3, facecolor='black')
     sino_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
     return {
@@ -802,12 +830,39 @@ async def get_full_sinogram_image(dataset_id: str, patient_id: str, slice_index:
     
     # High resolution DPI for clinical sinogram
     fig = plt.figure(figsize=(8, 8), dpi=100)
-    ax = fig.add_axes([0, 0, 1, 1])
+    fig.patch.set_facecolor('black')
+    ax = fig.add_axes([0.15, 0.15, 0.7, 0.7])
     ax.imshow(full_sino, cmap='gray', vmin=0.0, vmax=8.0, aspect='auto')
-    ax.axis('off')
+
+    # Draw Axes with visible tick labels representing:
+    # y-axis (Sources, increasing downward)
+    # x-axis (Detector Columns)
+    ax.set_xlabel("Detector Column Index", color='white', fontsize=12)
+    ax.set_ylabel("Source Index (Increasing Downward)", color='white', fontsize=12)
+    ax.tick_params(colors='white', which='both', labelsize=10)
+    ax.spines['bottom'].set_color('white')
+    ax.spines['top'].set_color('white')
+    ax.spines['left'].set_color('white')
+    ax.spines['right'].set_color('white')
+
+    # Add Twin X and Twin Y Axes for Angles
+    # Target range: Source Angles and Detector Angles from 0 to 360 degrees
+    # Set secondary X axis on top
+    ax_top = ax.twiny()
+    ax_top.set_xlim(0, 360)
+    ax_top.set_xlabel("Detector Angle (Degrees)", color='white', fontsize=12)
+    ax_top.tick_params(colors='white', which='both', labelsize=10)
+    ax_top.spines['top'].set_color('white')
+
+    # Set secondary Y axis on right
+    ax_right = ax.twinx()
+    ax_right.set_ylim(360, 0) # Increasing downward to match source indices
+    ax_right.set_ylabel("Source Angle (Degrees)", color='white', fontsize=12)
+    ax_right.tick_params(colors='white', which='both', labelsize=10)
+    ax_right.spines['right'].set_color('white')
     
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches=0, pad_inches=0)
+    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.3, facecolor='black')
     plt.close(fig)
     buf.seek(0)
     img_b64 = base64.b64encode(buf.read()).decode('utf-8')
@@ -880,9 +935,8 @@ LANDING_HTML = """
 </head>
 <body>
     <main class="kiosk-shell">
-        <header class="page-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem 2.5rem 1rem;">
-            <h1 class="page-title" style="margin: 0;">CT Reconstruction Laboratory</h1>
-            <img src="/static/branding/ats/logo-color.png" alt="Advanced Tomography Systems logo" style="height: 60px; object-fit: contain; flex: 0 0 auto;">
+        <header class="page-header" style="display: flex; justify-content: center; align-items: center; padding: 1.5rem 2.5rem 1rem; position: relative;">
+            <h1 class="page-title" style="margin: 0; text-align: center;">Static CT Reconstruction Algorithms</h1>
         </header>
 
         <section class="workflow-shell">
@@ -982,25 +1036,22 @@ LANDING_HTML = """
                                             <span id="slice-inst-display">Inst: 1</span>
                                         </div>
                                     </div>
+                                    <div class="control-row">
+                                        <label>Window Level</label>
+                                        <input type="range" id="window-level-slider" min="-1000" max="1500" value="50">
+                                        <span id="wl-display">50</span>
+                                    </div>
+                                    <div class="control-row">
+                                        <label>Window Width</label>
+                                        <input type="range" id="window-width-slider" min="1" max="2500" value="350">
+                                        <span id="ww-display">350</span>
+                                    </div>
                                 </div>
-                                <div class="metadata-panel" style="max-height: 140px; min-height: 100px; padding: 0.8rem; margin: 0;">
+                                <div class="metadata-panel" style="padding: 0.8rem; margin: 0;">
                                     <h3 style="margin: 0 0 0.4rem 0; font-size: 0.8rem;">DICOM METADATA</h3>
                                     <div class="metadata-scroll-container" style="padding: 0.4rem; height: calc(100% - 1.2rem); overflow-y: auto;">
                                         <div id="dicom-metadata-text" class="metadata-dump" style="font-size: 0.85rem; line-height: 1.4;"></div>
                                     </div>
-                                </div>
-                            </div>
-                            <!-- Bottom section: Window levels stacked vertically and matching widths -->
-                            <div style="display: flex; flex-direction: column; gap: 1rem; width: 100%; border-top: 1px solid rgba(0, 0, 0, 0.05); padding-top: 1rem;">
-                                <div class="control-row">
-                                    <label>Window Level</label>
-                                    <input type="range" id="window-level-slider" min="-1000" max="1500" value="50">
-                                    <span id="wl-display">50</span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Window Width</label>
-                                    <input type="range" id="window-width-slider" min="1" max="2500" value="350">
-                                    <span id="ww-display">350</span>
                                 </div>
                             </div>
                         </div>
@@ -1037,10 +1088,11 @@ LANDING_HTML = """
                                     </select>
                                 </div>
                                 <div class="control-group">
-                                    <label>Exposure (mA)</label>
+                                    <label>Exposure (mAs)</label>
                                     <select id="sim-exposure-select">
-                                        <option value="1">1 mA (I0=1e5)</option>
-                                        <option value="100" selected>100 mA (I0=1e7)</option>
+                                        <option value="1">1 mAs (I0=1e5)</option>
+                                        <option value="10">10 mAs (I0=1e6)</option>
+                                        <option value="100" selected>100 mAs (I0=1e7)</option>
                                     </select>
                                 </div>
                                 
@@ -1099,12 +1151,12 @@ LANDING_HTML = """
                                 <div class="timing-display" id="timing-sino">--</div>
                             </div>
                             <div class="recon-view">
-                                <label>Laminogram (BP)</label>
+                                <label>Unfiltered Back Projection</label>
                                 <div class="stage-figure-box" id="recon-box-unfiltered" aria-label="Unfiltered BP"></div>
                                 <div class="timing-display" id="timing-unfiltered">-- ms</div>
                             </div>
                             <div class="recon-view">
-                                <label>EigenFBP</label>
+                                <label>Eigen Filtered Back Projection</label>
                                 <div class="stage-figure-box" id="recon-box-filtered" aria-label="Filtered Recon"></div>
                                 <div class="timing-display" id="timing-filtered">4096-mode sparse eigen filter</div>
                             </div>
@@ -1117,7 +1169,8 @@ LANDING_HTML = """
                                 <button class="button button-stop" data-stop-button="eigen-fbp-recon" disabled type="button">Stop</button>
                                 <button class="button button-ghost" data-next-stage="eigen-fbp-recon" disabled type="button">Next: HighFidelityMBIR</button>
                             </div>
-                            <div class="stage-hint">The app and training prep share the combined SVD basis: base 1024 modes plus 3 extension blocks for a total rank of 4096.</div>
+                        </div>
+                        <div class="progress-block">
                         </div>
                         <div class="progress-block">
                             <div class="progress-label">EigenFBP status</div>
@@ -1164,13 +1217,13 @@ LANDING_HTML = """
                         <div class="control-panel">
                             <div class="control-row">
                                 <label>Iterations</label>
-                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="100">
-                                <span id="iter-count-display">100</span>
+                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="30">
+                                <span id="iter-count-display">30</span>
                             </div>
                             <div class="control-row">
                                 <label>TV Strength</label>
-                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="-2.5">
-                                <span id="tv-strength-display">0.003</span>
+                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="4.0">
+                                <span id="tv-strength-display">10000</span>
                             </div>
                             <div class="control-row">
                                 <label>Step Size / LR</label>
@@ -1187,6 +1240,14 @@ LANDING_HTML = """
                         </div>
                     </div>
                     <div class="stage-footer">
+                        <div class="stage-actions">
+                            <div class="action-group">
+                                <button class="button button-primary" data-run-button="model-based-iterative-recon" disabled type="button">Run HighFidelityMBIR</button>
+                                <button class="button button-stop" data-stop-button="model-based-iterative-recon" disabled type="button">Stop</button>
+                                <button class="button button-ghost" data-next-stage="model-based-iterative-recon" disabled type="button">Next: NeuralSpeed</button>
+                            </div>
+                        </div>
+                        <div class="progress-block">
                         <div class="stage-actions">
                             <div class="action-group">
                                 <button class="button button-primary" data-run-button="model-based-iterative-recon" disabled type="button">Run HighFidelityMBIR</button>
@@ -1221,7 +1282,7 @@ LANDING_HTML = """
                                 <div class="timing-display" id="timing-dlr-sino">--</div>
                             </div>
                             <div class="recon-view">
-                                <label>Full FBP Initialization</label>
+                                <label>FBP Initialization</label>
                                 <div class="stage-figure-box" id="dlr-box-init"></div>
                                 <div class="timing-display" id="timing-dlr-init">-- ms</div>
                             </div>
@@ -1239,7 +1300,6 @@ LANDING_HTML = """
                                 <button class="button button-stop" data-stop-button="deep-learning-recon" disabled type="button">Stop</button>
                                 <button class="button button-ghost" data-next-stage="deep-learning-recon" disabled type="button">Next: GenerativeVision</button>
                             </div>
-                            <div class="stage-hint">The shared backprojection work is reused. The displayed final timing reflects only the restoration step after the Full FBP initialization is ready.</div>
                         </div>
                         <div class="progress-block">
                             <div class="progress-label">NeuralSpeed status</div>
@@ -1284,8 +1344,8 @@ LANDING_HTML = """
                             <div class="control-rows-container">
                                 <div class="control-row">
                                     <label>Diffusion Steps</label>
-                                    <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="50">
-                                    <span id="diffusion-steps-display" class="slider-val-badge">50</span>
+                                    <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="20">
+                                    <span id="diffusion-steps-display" class="slider-val-badge">20</span>
                                 </div>
                                 <div class="control-row">
                                     <label>Solver Mode</label>
@@ -1303,28 +1363,28 @@ LANDING_HTML = """
                                 </div>
                                 <div class="control-row">
                                     <label>Max Null Noise (HU)</label>
-                                    <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3">
+                                    <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3.0">
                                     <span id="sigma-max-display" class="slider-val-badge">1000</span>
                                 </div>
                                 <div class="control-row">
                                     <label>Min Null Noise (HU)</label>
-                                    <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0">
+                                    <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0.0">
                                     <span id="sigma-min-display" class="slider-val-badge">1</span>
                                 </div>
                                 <div class="control-row">
                                     <label>Langevin Temp</label>
-                                    <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="0">
-                                    <span id="diffusion-temperature-display" class="slider-val-badge">0.00</span>
+                                    <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="5.0">
+                                    <span id="diffusion-temperature-display" class="slider-val-badge">5.00</span>
                                 </div>
                                 <div class="control-row">
                                     <label>Langevin Steps</label>
-                                    <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="100">
-                                    <span id="langevin-steps-display" class="slider-val-badge">100</span>
+                                    <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="0">
+                                    <span id="langevin-steps-display" class="slider-val-badge">0</span>
                                 </div>
                                 <div class="control-row">
                                     <label>Num Samples</label>
-                                    <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="4">
-                                    <span id="num-samples-display" class="slider-val-badge">4</span>
+                                    <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="1">
+                                    <span id="num-samples-display" class="slider-val-badge">1</span>
                                 </div>
                             </div>
 
@@ -1354,9 +1414,7 @@ LANDING_HTML = """
                             <div class="action-group">
                                 <button class="button button-primary" data-run-button="generative-ai-recon" disabled type="button">Run GenerativeVision</button>
                                 <button class="button button-stop" data-stop-button="generative-ai-recon" disabled type="button">Stop</button>
-                                <a class="button button-ghost" href="/pong/">Open Pong Demo</a>
                             </div>
-                            <div class="stage-hint">Reverse diffusion proceeds only in the null space. The measured range space is preserved at every step.</div>
                         </div>
                         <div class="progress-block">
                             <div class="progress-label">GenerativeVision status</div>
@@ -1370,10 +1428,10 @@ LANDING_HTML = """
         </section>
 
         <section class="brand-banner" aria-label="Partner logos">
-            <img src="/static/branding/arpa-h/logo-dark-blue-white-background.png" alt="ARPA-H logo">
-            <img src="/static/branding/ats/logo-color.png" class="logo-ats" alt="Advanced Tomography Systems logo">
-            <img src="/static/branding/mgh/logo.png" alt="Massachusetts General Hospital logo">
-            <img src="/static/branding/hms/logo.png" class="logo-hms" alt="Harvard Medical School logo">
+            <img src="/static/branding/arpa-h/logo-dark-blue-white-background.png" alt="ARPA-H logo" style="height: 60px;">
+            <img src="/static/branding/ats/logo-color.png" class="logo-ats" alt="Advanced Tomography Systems logo" style="height: 90px; margin-left: 20px;">
+            <img src="/static/branding/mgh/logo.png" alt="Massachusetts General Hospital logo" style="height: 60px;">
+            <img src="/static/branding/hms/logo.png" class="logo-hms" alt="Harvard Medical School logo" style="height: 90px; margin-right: 20px;">
         </section>
     </main>
     <script src="/static/site/landing.js"></script>

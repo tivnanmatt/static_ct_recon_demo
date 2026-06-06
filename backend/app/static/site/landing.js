@@ -909,44 +909,67 @@ async function runSimulationAnimation(progressBar, statusText, nextButton, contr
         sinoCanvas.width = imgSino.width;
         sinoCanvas.height = imgSino.height;
 
-        statusText.textContent = `Animating acquisition overlay while reusing the precomputed sinogram...`;
+        statusText.textContent = `Pre-loading animation overlays for maximum performance...`;
+
+        const totalSources = numSources;
+        const overlayImages = [];
+        const loadPromises = [];
+
+        for (let i = 0; i < totalSources; i++) {
+            const img = new Image();
+            const p = new Promise(resolve => {
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null);
+                img.src = `/static/sim_animations/${totalSources}/frame_${i}.png`;
+            });
+            overlayImages.push(img);
+            loadPromises.push(p);
+        }
+
+        await Promise.all(loadPromises);
+
+        statusText.textContent = `Looping through simulation sequence at maximum hardware speed...`;
 
         let currentSource = 0;
-        const totalSources = numSources;
 
         for (currentSource = 0; currentSource < totalSources; currentSource++) {
             if (signal.aborted || workflowState === 'START') break;
 
-            const overResp = await fetch(`/api/simulate/overlay/${totalSources}/${currentSource}`, { signal });
-            const overData = await overResp.json();
-            
-            const imgOver = await new Promise(r => { 
-                const i = new Image(); 
-                i.onload = () => r(i); 
-                i.src = `data:image/png;base64,${overData.overlay}`; 
-            });
+            const imgOver = overlayImages[currentSource];
 
             // 1. Draw Geometry
             geoCtx.clearRect(0, 0, geoCanvas.width, geoCanvas.height);
             geoCtx.drawImage(imgBase, 0, 0);
-            geoCtx.drawImage(imgOver, 0, 0);
+            if (imgOver) {
+                geoCtx.drawImage(imgOver, 0, 0);
+            }
 
             // 2. Draw Sinogram with "Curtain"
             sinoCtx.clearRect(0, 0, sinoCanvas.width, sinoCanvas.height);
             sinoCtx.drawImage(imgSino, 0, 0);
             
             const progress = (currentSource + 1) / totalSources;
-            const curtainY = progress * sinoCanvas.height;
-            sinoCtx.fillStyle = 'black';
-            sinoCtx.fillRect(0, curtainY, sinoCanvas.width, sinoCanvas.height - curtainY);
+
+            // Plot area boundaries (15% to 85% of figure width and height)
+            const plotLeft = 0.15 * sinoCanvas.width;
+            const plotWidth = 0.7 * sinoCanvas.width;
+            const plotTop = 0.15 * sinoCanvas.height;
+            const plotHeight = 0.7 * sinoCanvas.height;
+
+            const curtainTop = plotTop + progress * plotHeight;
+            const curtainHeight = (plotTop + plotHeight) - curtainTop;
+
+            if (curtainHeight > 0) {
+                sinoCtx.fillStyle = 'black';
+                sinoCtx.fillRect(plotLeft, curtainTop, plotWidth, curtainHeight);
+            }
 
             // Update Progress
             progressBar.style.width = `${progress * 100}%`;
             statusText.textContent = `Views acquired: ${currentSource + 1} / ${totalSources}`;
             
-            // Brief pause for visual effect - if it's too fast, we can't see the detail
-            // Adjust delay to control total animation time
-            await sleep(10, signal);
+            // Minimal pause to trigger browser repaint and run as fast as possible
+            await sleep(1, signal);
         }
 
         if (!signal.aborted && workflowState !== 'START') {

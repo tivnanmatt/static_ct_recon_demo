@@ -580,8 +580,8 @@ class SimulationManager:
         ax.set_xlim(-450, 450)
         ax.set_ylim(-450, 450)
 
-        # Static Sources
-        ax.scatter(src_pos[:, 0], src_pos[:, 1], c='#FCC1DC', s=10, alpha=0.3, zorder=1)
+        # Static Sources - color: #0957BE, smaller size: 5
+        ax.scatter(src_pos[:, 0], src_pos[:, 1], c='#0957BE', s=5, alpha=0.3, zorder=1)
         
         # Detectors (Inactive style)
         det_segs = []
@@ -630,8 +630,8 @@ class SimulationManager:
         ax.set_xlim(-450, 450)
         ax.set_ylim(-450, 450)
 
-        # Active Source
-        ax.scatter([src_pos[view_idx, 0]], [src_pos[view_idx, 1]], c='#FD4497', marker='*', s=200, zorder=10)
+        # Active Source - color: #2FB1E6, circular marker, larger size: 150
+        ax.scatter([src_pos[view_idx, 0]], [src_pos[view_idx, 1]], c='#2FB1E6', marker='o', s=150, zorder=10)
 
         # Active Detectors
         active_segs = []
@@ -655,7 +655,7 @@ class SimulationManager:
         # Subsample rays for performance
         indices = np.random.choice(s_coords.shape[0], min(200, s_coords.shape[0]), replace=False)
         ray_segs = np.stack([s_coords[indices], d_coords[indices]], axis=1)
-        lc_rays = LineCollection(ray_segs, color='#FD4497', alpha=0.15, linewidths=0.5, zorder=5)
+        lc_rays = LineCollection(ray_segs, color='#29E1CB', alpha=0.15, linewidths=0.5, zorder=5)
         ax.add_collection(lc_rays)
 
         # HUD Text
@@ -684,8 +684,8 @@ class SimulationManager:
             
             # Static Sources
             self.geo_artists = {}
-            self.geo_artists['sources'] = self.ax_geo.scatter(src_pos[:, 0], src_pos[:, 1], c='#FCC1DC', s=10, alpha=0.3, zorder=1)
-            self.geo_artists['active_source'] = self.ax_geo.scatter([0], [0], c='#FD4497', marker='*', s=200, zorder=10)
+            self.geo_artists['sources'] = self.ax_geo.scatter(src_pos[:, 0], src_pos[:, 1], c='#0957BE', s=5, alpha=0.3, zorder=1)
+            self.geo_artists['active_source'] = self.ax_geo.scatter([0], [0], c='#2FB1E6', marker='o', s=150, zorder=10)
             
             # Detectors
             det_segs = []
@@ -701,7 +701,7 @@ class SimulationManager:
             self.ax_geo.add_collection(self.geo_artists['detectors'])
             
             # Rays (Init with empty collection)
-            self.geo_artists['rays'] = LineCollection([], color='#FD4497', alpha=0.08, linewidths=0.5, zorder=5)
+            self.geo_artists['rays'] = LineCollection([], color='#29E1CB', alpha=0.08, linewidths=0.5, zorder=5)
             self.ax_geo.add_collection(self.geo_artists['rays'])
             
             # Patient Image
