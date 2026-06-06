@@ -1134,6 +1134,31 @@ LANDING_HTML = """
                         </div>
                     </div>
                     
+                    <div class="stage-figure-shell">
+                        <div class="iterative-layout-grid">
+                            <div class="recon-view">
+                                <label>Ground Truth</label>
+                                <div class="stage-figure-box" id="iter-box-gt"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>Simulated Sinogram</label>
+                                <div class="stage-figure-box" id="iter-box-sino"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>EigenFBP Initialization</label>
+                                <div class="stage-figure-box" id="iter-box-init"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>HighFidelityMBIR</label>
+                                <div class="stage-figure-box" id="iter-box-live"></div>
+                            </div>
+                            <div class="recon-view recon-view-loss recon-view-tall">
+                                <label>Loss Function</label>
+                                <div class="stage-figure-box stage-figure-box-tall" id="iter-box-loss"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="control-panel-wrapper">
                         <!-- Control Panel (Full Width) -->
                         <div class="control-panel">
@@ -1158,31 +1183,6 @@ LANDING_HTML = """
                                     <input type="checkbox" id="use-precond-check" checked>
                                 </div>
                                 <span></span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="stage-figure-shell">
-                        <div class="iterative-layout-grid">
-                            <div class="recon-view">
-                                <label>Ground Truth</label>
-                                <div class="stage-figure-box" id="iter-box-gt"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>Simulated Sinogram</label>
-                                <div class="stage-figure-box" id="iter-box-sino"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>EigenFBP Initialization</label>
-                                <div class="stage-figure-box" id="iter-box-init"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>HighFidelityMBIR</label>
-                                <div class="stage-figure-box" id="iter-box-live"></div>
-                            </div>
-                            <div class="recon-view recon-view-loss recon-view-tall">
-                                <label>Loss Function</label>
-                                <div class="stage-figure-box stage-figure-box-tall" id="iter-box-loss"></div>
                             </div>
                         </div>
                     </div>
@@ -1256,6 +1256,27 @@ LANDING_HTML = """
                         </div>
                     </div>
 
+                    <div class="stage-figure-shell">
+                        <div class="reconstruction-layout-grid">
+                            <div class="recon-view">
+                                <label>Ground Truth</label>
+                                <div class="stage-figure-box" id="gen-box-gt"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>Initial FBP (full)</label>
+                                <div class="stage-figure-box" id="gen-box-full-fbp"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>Generative Process</label>
+                                <div class="stage-figure-box" id="gen-box-xt"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>Generative Reconstruction</label>
+                                <div class="stage-figure-box" id="gen-box-x0"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="control-panel-wrapper">
                         <!-- Control Panel (Full Width) -->
                         <div class="control-panel">
@@ -1309,31 +1330,6 @@ LANDING_HTML = """
                                     <button type="button" class="display-mode-btn" id="btn-mode-animation" data-mode="animation">B) Multi-Sample Animation</button>
                                     <button type="button" class="display-mode-btn" id="btn-mode-mean" data-mode="mean">C) Generative Mean</button>
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="stage-figure-shell">
-                        <div class="reconstruction-layout-grid-5">
-                            <div class="recon-view">
-                                <label>Ground Truth</label>
-                                <div class="stage-figure-box" id="gen-box-gt"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>Initial FBP (full)</label>
-                                <div class="stage-figure-box" id="gen-box-full-fbp"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>Predicted Null Residual</label>
-                                <div class="stage-figure-box" id="gen-box-null-hat"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>Generative Process</label>
-                                <div class="stage-figure-box" id="gen-box-xt"></div>
-                            </div>
-                            <div class="recon-view">
-                                <label>Generative Reconstruction</label>
-                                <div class="stage-figure-box" id="gen-box-x0"></div>
                             </div>
                         </div>
                     </div>

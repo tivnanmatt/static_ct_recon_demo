@@ -168,7 +168,6 @@ function updateDisplay() {
 
     const boxGt = document.getElementById('gen-box-gt');
     const boxFbp = document.getElementById('gen-box-full-fbp');
-    const boxNullHat = document.getElementById('gen-box-null-hat');
     const boxXt = document.getElementById('gen-box-xt');
     const boxX0 = document.getElementById('gen-box-x0');
 
@@ -179,22 +178,18 @@ function updateDisplay() {
 
     if (M <= 1 || currentDisplayMode === 'sample') {
         // Option A: Single Sample Mode (Sample 0)
-        if (lastStreamData.null_hat) globalUpdateImageView(boxNullHat, lastStreamData.null_hat);
         if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
         if (lastStreamData.x0) globalUpdateImageView(boxX0, lastStreamData.x0);
     } else if (currentDisplayMode === 'animation') {
         // Option B: Multi-Sample Animation Mode (cycles through the batch samples)
         const idx = animationCycleIdx % M;
-        const nullHatImg = (lastStreamData.null_hat_list && lastStreamData.null_hat_list[idx]) || lastStreamData.null_hat;
         const xtImg = (lastStreamData.xt_list && lastStreamData.xt_list[idx]) || lastStreamData.xt;
         const x0Img = (lastStreamData.x0_list && lastStreamData.x0_list[idx]) || lastStreamData.x0;
 
-        if (nullHatImg) globalUpdateImageView(boxNullHat, nullHatImg);
         if (xtImg) globalUpdateImageView(boxXt, xtImg);
         if (x0Img) globalUpdateImageView(boxX0, x0Img);
     } else if (currentDisplayMode === 'mean') {
         // Option C: Generative Mean Mode
-        if (lastStreamData.null_hat) globalUpdateImageView(boxNullHat, lastStreamData.null_hat);
         if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
 
         // Reconstruction should show the mean_x0 (which is the average posterior mean)
