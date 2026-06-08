@@ -808,13 +808,21 @@ async def reconstruct_generative(
             measurement_null_batched = measurement_null.repeat(M, 1, 1, 1)
             full_fbp_batched = full_fbp.repeat(M, 1, 1, 1)
 
+            # Anchor the generative process on the sharpened FBP's range component
+            # (project_signal(full_fbp)) instead of the raw pseudoinverse pinv, so the forward
+            # process is the displayed FBP + null-space noise and the reconstruction
+            # (range_anchor + null_hat) does not inherit the pinv ringing. Inference-only.
+            fbp_signal_batched = full_fbp_batched - builder.project_batch_null(full_fbp_batched)
             noise_null = builder.project_batch_null(torch.randn_like(pinv_batched)) * sigma_max
             xt_null_start = builder.project_batch_null(measurement_null_batched + noise_null)
-            xt_start = pinv_batched + xt_null_start
+            xt_start = fbp_signal_batched + xt_null_start
 
             # BUILD INPUT STACK FOR SOLVER
             # Channels: [pinv, meas_null, full_fbp, null_xt, total_xt, coord_x, coord_y]
+            # Channel 0 is re-anchored from pinv to the sharpened FBP range so the solver's
+            # reconstruction (inputs[:,0:1] + null_hat) uses the sharpened FBP.
             inputs = builder.build_input_channels(comps).unsqueeze(0).repeat(M, 1, 1, 1)
+            inputs[:, 0:1, ...] = fbp_signal_batched
             inputs[:, 3:4, ...] = xt_null_start
             inputs[:, 4:5, ...] = xt_start
 
@@ -1282,10 +1290,17 @@ async def run_evaluation_benchmark(
                 M = max(1, int(num_samples))
                 pinv_t = measurement_components["pinv"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
                 measurement_null_t = measurement_components["measurement_null"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
+                full_fbp_t = measurement_components["full_fbp"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
+                # Anchor the generative process on the sharpened FBP's range component
+                # (project_signal(full_fbp)) instead of the raw pseudoinverse pinv, so the
+                # forward process is the displayed FBP + null-space noise and the reconstruction
+                # (range_anchor + null_hat) does not inherit the pinv ringing. Inference-only.
+                fbp_signal_t = full_fbp_t - builder_gen.project_batch_null(full_fbp_t)
                 noise_null = builder_gen.project_batch_null(torch.randn_like(pinv_t)) * gen_sigma_max
                 xt_null_start = builder_gen.project_batch_null(measurement_null_t + noise_null)
-                xt_start = pinv_t + xt_null_start
+                xt_start = fbp_signal_t + xt_null_start
                 inputs = builder_gen.build_input_channels(measurement_components).unsqueeze(0).repeat(M, 1, 1, 1)
+                inputs[:, 0:1, ...] = fbp_signal_t
                 inputs[:, 3:4, ...] = xt_null_start
                 inputs[:, 4:5, ...] = xt_start
                 gen_iter = solve_combined_diffusion_langevin(
@@ -1649,10 +1664,10 @@ LANDING_HTML = """
                             </div>
                         </div>
 
-                        <div class="control-panel-wrapper" style="flex: 1.5 1 0% !important; margin-bottom: 0 !important;">
+                        <div class="control-panel-wrapper" style="flex: 1.5 1 0% !important; margin-bottom: 0 !important; display: flex; flex-direction: column; min-height: 0;">
                             <!-- Control Panel (Full Width and multi-column flexible layout) -->
-                            <div class="control-panel compact-generative-panel" style="padding: 1rem 1.25rem !important;">
-                                <div class="generative-control-grid" style="display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 0.75rem 1.5rem; width: 100%;">
+                            <div class="control-panel compact-generative-panel" style="padding: 1rem 1.25rem !important; flex: 1 1 0%; min-height: 0;">
+                                <div class="generative-control-grid" style="display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 0.75rem 1.5rem; width: 100%; height: 100%; min-height: 0;">
                                     <!-- Left Column: Preset buttons -->
                                     <div style="display: flex; flex-direction: column; gap: 0.5rem; border-right: 1px solid rgba(0, 27, 94, 0.1); padding-right: 15px; justify-content: center;">
                                         <div class="control-row-col">
@@ -1687,7 +1702,7 @@ LANDING_HTML = """
                                     <!-- Right Column: Active Filter Plot -->
                                     <div style="display: flex; flex-direction: column; gap: 0.4rem; justify-content: center; border-left: 1px solid rgba(0, 27, 94, 0.1); padding-left: 15px;">
                                         <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Active Filter Plot</label>
-                                        <div class="stage-figure-box" id="recon-box-filter-plot" style="background: white; flex-grow: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; border: 1px solid #444; height: 190px; max-height: 190px; width: 100%;">
+                                        <div class="stage-figure-box" id="recon-box-filter-plot" style="background: white; flex-grow: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; border: 1px solid #444; min-height: 190px; width: 100%;">
                                             <img id="fbp-filter-plot-img" style="width: 100%; height: 100%; object-fit: contain;" src="" alt="Filter graph plot">
                                         </div>
                                     </div>

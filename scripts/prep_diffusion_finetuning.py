@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 import shutil
 import random
 import torch
@@ -18,11 +19,18 @@ from prep_DLR import DLRUNet, SpectralFeatureBuilder, ClinicalSplitSampler, buil
 from prep_diffusion_train import DiffusionTrainingConfig, train_diffusion_epoch, hu_to_atten
 
 def main():
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"DEBUG: Using device={device}")
-    
-    n_sources = [80, 240]
-    exposures = [0.1, 1.0, 10.0, 100.0]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--n-sources", nargs="+", type=int, default=[80, 240])
+    parser.add_argument("--exposures", nargs="+", type=float, default=[0.1, 1.0, 10.0, 100.0])
+    args = parser.parse_args()
+
+    device = torch.device(args.device)
+    print(f"DEBUG: Using device={device}, epochs={args.epochs}")
+
+    n_sources = args.n_sources
+    exposures = args.exposures
     
     for n_source in n_sources:
         model_dir = get_model_dir("main", n_source)
@@ -55,13 +63,11 @@ def main():
             exposure_filename = f"diffusion_{n_source}_{exposure_mas}mas.pt"
             exposure_path = model_dir / exposure_filename
             
-            # Copy from base weight if the target exposure model doesn't exist yet
-            if not exposure_path.exists():
-                print(f"DEBUG: Creating {exposure_path} from base weights.")
-                shutil.copy(base_checkpoint_path, exposure_path)
-            else:
-                print(f"DEBUG: {exposure_path} already exists. Skipping or resuming fine-tuning.")
-                continue
+            # Always (re-)initialize this exposure model from the freshly trained base,
+            # then fine-tune. The base changed (new input style), so we do NOT resume the
+            # stale exposure weights that were fine-tuned from the old base.
+            print(f"DEBUG: Initializing {exposure_path} from base {base_checkpoint_path}.")
+            shutil.copy(base_checkpoint_path, exposure_path)
             
             # Setup Training Config for this exposure
             sigma_min = hu_to_atten(1.0)
@@ -73,7 +79,7 @@ def main():
                 training_dataset_ids=("head", "thorax", "abdomen", "pelvic"),
                 n_source=n_source,
                 device=str(device),
-                epochs=10,
+                epochs=args.epochs,
                 train_steps_per_epoch=100,
                 val_steps_per_epoch=10,
                 batch_size=8,
@@ -118,8 +124,8 @@ def main():
             rng_train = random.Random(config.seed + 1)
             rng_val = random.Random(config.seed + 2)
             
-            # Fine-tune 10 epochs
-            for epoch in range(1, 11):
+            # Fine-tune for the requested number of epochs
+            for epoch in range(1, args.epochs + 1):
                 train_results = train_diffusion_epoch(
                     model=model,
                     optimizer=optimizer,
@@ -145,10 +151,10 @@ def main():
                         rng=rng_val
                     )
                     
-                print(f"EPOCH {epoch}/10 - Train Loss: {train_results['loss']:.6e} | Val Loss: {val_results['loss']:.6e}")
+                print(f"EPOCH {epoch}/{args.epochs} - Train Loss: {train_results['loss']:.6e} | Val Loss: {val_results['loss']:.6e}")
                 
             # Copy new trained payload and save
-            ckpt["epoch"] = ckpt.get("epoch", 0) + 10
+            ckpt["epoch"] = ckpt.get("epoch", 0) + args.epochs
             ckpt["model_state"] = model.state_dict()
             ckpt["optimizer_state"] = optimizer.state_dict()
             ckpt["scheduler_state"] = scheduler.state_dict()

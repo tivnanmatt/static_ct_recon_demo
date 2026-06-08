@@ -39,7 +39,7 @@ def generate_filter_graph_png(w_low: float, w_mid: float, w_high: float) -> str:
     f_cycles_mm = f_pixel / pixel_spacing
     
     # Wide figure with white axes background and transparent figure background
-    fig, ax = plt.subplots(figsize=(13.0, 7.0), dpi=110)
+    fig, ax = plt.subplots(figsize=(7.0, 3.0), dpi=300)
     fig.patch.set_facecolor('none')
     fig.patch.set_alpha(0.0)
     ax.set_facecolor('#ffffff')
@@ -70,7 +70,7 @@ def generate_filter_graph_png(w_low: float, w_mid: float, w_high: float) -> str:
 
     buf = io.BytesIO()
     # bbox_inches='tight' so the externally-anchored legend is included in the saved image.
-    plt.savefig(buf, format='png', transparent=True, dpi=110, bbox_inches='tight')
+    plt.savefig(buf, format='png', transparent=True, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
     return base64.b64encode(buf.getvalue()).decode('utf-8')

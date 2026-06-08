@@ -399,11 +399,13 @@ class SpectralFeatureBuilder:
             pinv = pinv_flat.reshape(self.height, self.width) * self.fov_mask
             filtered = filtered_flat.reshape(self.height, self.width) * self.fov_mask
             
-            # Apply Fourier ramp filter to get the 'ramp' FBP as input instead of SVD 'optimized'
+            # Apply Fourier ramp filter to get the 'ramp' (sharpened) FBP for the full_fbp channel.
             fbp_fft = torch.fft.fft2(filtered)
             fbp_fft_filtered = fbp_fft * self.H_ramp
             filtered_ramp = torch.real(torch.fft.ifft2(fbp_fft_filtered)) * self.fov_mask
-            null_component = filtered_ramp - pinv
+            # New input style: keep the range (pinv) and null space unfiltered (derived from the
+            # un-ramped `filtered`), while the full_fbp channel carries the sharpened (ramp) FBP.
+            null_component = filtered - pinv
 
         return {
             "pinv": pinv,
@@ -423,11 +425,13 @@ class SpectralFeatureBuilder:
             pinv = pinv_flat.reshape(self.height, self.width) * self.fov_mask
             filtered = filtered_flat.reshape(self.height, self.width) * self.fov_mask
             
-            # Apply Fourier ramp filter to get the 'ramp' FBP as input instead of SVD 'optimized'
+            # Apply Fourier ramp filter to get the 'ramp' (sharpened) FBP for the full_fbp channel.
             fbp_fft = torch.fft.fft2(filtered)
             fbp_fft_filtered = fbp_fft * self.H_ramp
             filtered_ramp = torch.real(torch.fft.ifft2(fbp_fft_filtered)) * self.fov_mask
-            null_component = filtered_ramp - pinv
+            # New input style: keep the range (pinv) and null space unfiltered (derived from the
+            # un-ramped `filtered`), while the full_fbp channel carries the sharpened (ramp) FBP.
+            null_component = filtered - pinv
 
         return {
             "pinv": pinv,

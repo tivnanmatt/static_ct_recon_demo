@@ -1547,3 +1547,25 @@ input[type="range"] {
 [data-stage-panel="eigen-fbp-recon"] .control-panel-wrapper {
     flex: 1.8 1 0% !important; /* Allocation increase from 1.0 to 1.8 */
 }
+
+/* FlashFBP: let the bottom control panel fill its allocated height and the (wide)
+   filter plot grow into it. Lives in CSS (served from disk) so it applies on a browser
+   refresh without restarting the web server. Scoped to this stage only. */
+[data-stage-panel="eigen-fbp-recon"] .control-panel-wrapper {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+}
+[data-stage-panel="eigen-fbp-recon"] .control-panel-wrapper > .control-panel {
+    flex: 1 1 0% !important;
+    min-height: 0 !important;
+}
+[data-stage-panel="eigen-fbp-recon"] .generative-control-grid {
+    height: 100% !important;
+    min-height: 0 !important;
+}
+[data-stage-panel="eigen-fbp-recon"] #recon-box-filter-plot {
+    height: auto !important;
+    max-height: none !important;
+    min-height: 190px !important;
+}
