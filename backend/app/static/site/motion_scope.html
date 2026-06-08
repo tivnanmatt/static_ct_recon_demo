@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motion Scope</title>
+    <link rel="stylesheet" href="/static/site/motion_scope.css">
+</head>
+<body>
+    <main class="motion-shell">
+        <header class="motion-header">
+            <div>
+                <p class="eyebrow">4D Lung Motion</p>
+                <h1>Motion Scope</h1>
+                <p class="subtitle">Load a gated lung case, simulate view-by-view acquisition through respiratory motion, and reconstruct each completed rotation as soon as it is available.</p>
+            </div>
+            <div class="header-actions">
+                <a class="link-button" href="/">Static Scope</a>
+            </div>
+        </header>
+
+        <section class="motion-grid">
+            <article class="panel patient-panel">
+                <div class="panel-heading">
+                    <img class="panel-icon" src="/static/site/workflow-icons/loadpatient_icon.png" alt="Load Patient icon">
+                    <div>
+                        <h2>Load Patient</h2>
+                        <p>Cycle through respiratory phases and tune the display before simulation.</p>
+                    </div>
+                </div>
+                <div class="image-frame hero-frame">
+                    <img id="patient-preview" alt="Motion patient preview">
+                </div>
+                <div class="control-stack">
+                    <label class="control-row">
+                        <span>Patient</span>
+                        <input id="patient-slider" type="range" min="0" max="0" value="0">
+                        <strong id="patient-label">Loading...</strong>
+                    </label>
+                    <label class="control-row">
+                        <span>Axial Slice</span>
+                        <input id="slice-slider" type="range" min="0" max="0" value="0">
+                        <strong id="slice-label">0</strong>
+                    </label>
+                    <label class="control-row">
+                        <span>Window</span>
+                        <input id="window-slider" type="range" min="200" max="2500" value="1500">
+                        <strong id="window-label">1500</strong>
+                    </label>
+                    <label class="control-row">
+                        <span>Level</span>
+                        <input id="level-slider" type="range" min="-1000" max="500" value="-500">
+                        <strong id="level-label">-500</strong>
+                    </label>
+                    <label class="control-row">
+                        <span>Display Speed</span>
+                        <input id="display-speed-slider" type="range" min="1" max="100" value="100">
+                        <strong id="display-speed-label">1.00x</strong>
+                    </label>
+                </div>
+                <div class="toggle-row">
+                    <label><input id="overlay-clock-toggle" type="checkbox"> Overlay 1Hz clock</label>
+                    <div class="meta-chip" id="phase-chip">10 phases</div>
+                </div>
+                <div class="status-box" id="patient-status">Loading motion dataset...</div>
+            </article>
+
+            <article class="panel simulation-panel">
+                <div class="panel-heading">
+                    <img class="panel-icon" src="/static/site/workflow-icons/simulation_icon.png" alt="Simulation icon">
+                    <div>
+                        <h2>Simulation</h2>
+                        <p>Advance the gantry view by view while interpolating the patient state in time.</p>
+                    </div>
+                </div>
+                <div class="dual-frame">
+                    <div class="image-frame">
+                        <span class="frame-title">Current Patient State</span>
+                        <img id="simulation-patient-image" alt="Simulation patient state">
+                    </div>
+                    <div class="image-frame">
+                        <span class="frame-title">Accumulated Sinogram</span>
+                        <img id="simulation-sinogram-image" alt="Simulation sinogram">
+                    </div>
+                </div>
+                <div class="control-grid">
+                    <label>
+                        <span>Views</span>
+                        <select id="views-select">
+                            <option value="80">80 views</option>
+                            <option value="240">240 views</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Exposure</span>
+                        <select id="exposure-select">
+                            <option value="1">1 mAs</option>
+                            <option value="10">10 mAs</option>
+                            <option value="100" selected>100 mAs</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Number of Rotations</span>
+                        <input id="rotations-slider" type="range" min="1" max="6" value="2">
+                        <strong id="rotations-label">2</strong>
+                    </label>
+                    <label>
+                        <span>Rotations per Second</span>
+                        <select id="rps-select">
+                            <option value="4">4 rps</option>
+                            <option value="20">20 rps</option>
+                            <option value="80">80 rps</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="button-row">
+                    <button id="simulate-button" class="primary-button" type="button">Simulate Motion</button>
+                </div>
+                <div class="status-box" id="simulation-status">Idle</div>
+            </article>
+
+            <article class="panel reconstruction-panel">
+                <div class="panel-heading">
+                    <img class="panel-icon" src="/static/site/workflow-icons/motioncope_icon.png" alt="Motion Scope icon">
+                    <div>
+                        <h2>Reconstruction</h2>
+                        <p>Run each finished rotation through FlashFBP or NeuralSpark as soon as the previous recon completes.</p>
+                    </div>
+                </div>
+                <div class="method-cards">
+                    <label class="method-card active" data-method-card="flashfbp">
+                        <input type="radio" name="recon-method" value="flashfbp" checked>
+                        <img src="/static/site/workflow-icons/flashFBP_icon.png" alt="FlashFBP icon">
+                        <span>FlashFBP</span>
+                    </label>
+                    <label class="method-card" data-method-card="neuralspark">
+                        <input type="radio" name="recon-method" value="neuralspark">
+                        <img src="/static/site/workflow-icons/neuralspark_icon.png" alt="NeuralSpark icon">
+                        <span>NeuralSpark</span>
+                    </label>
+                </div>
+                <div class="image-frame recon-frame">
+                    <img id="reconstruction-image" alt="Motion reconstruction output">
+                </div>
+                <div class="status-box" id="reconstruction-status">Waiting for simulation.</div>
+                <div class="device-box" id="device-status">GPU assignments pending...</div>
+            </article>
+        </section>
+    </main>
+    <script src="/static/site/motion_scope.js"></script>
+</body>
+</html>

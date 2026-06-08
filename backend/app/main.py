@@ -28,6 +28,7 @@ for repo_root in REPO_ROOT_CANDIDATES:
 from api.datasets import DATASET_REGISTRY
 from api.deep_learning.model_registry import get_best_checkpoint_path, get_run_config_path, get_model_dir
 from api.simulation.projector import MU_WATER_60KEV, sim_manager
+from api.simulation.filter_plot import generate_filter_graph_png
 from scripts.prep_DLR import DLRUNet, SpectralFeatureBuilder, exposure_mas_to_diffusion_time, predict_reconstruction
 from scripts.prep_diffusion_test import solve_heun_null_space, solve_euler_null_space, solve_langevin_walk_only, solve_combined_diffusion_langevin
 
@@ -56,8 +57,8 @@ def clear_iterative_cancel(job_id: Optional[str]) -> None:
         iterative_cancel_events.pop(job_id, None)
 
 
-def get_dlr_runtime_assets(n_source: int, mode: str = "standard") -> Dict[str, object]:
-    cache_key = (n_source, mode)
+def get_dlr_runtime_assets(n_source: int, mode: str = "standard", model_variant: str = "base", exposure_mas: float = 100.0) -> Dict[str, object]:
+    cache_key = (n_source, mode, model_variant, exposure_mas)
     with dlr_runtime_lock:
         cached = dlr_runtime_cache.get(cache_key)
         if cached is not None:
@@ -73,7 +74,15 @@ def get_dlr_runtime_assets(n_source: int, mode: str = "standard") -> Dict[str, o
             run_config = json.load(handle)
 
         if mode == "generative":
-            checkpoint_path = get_model_dir(checkpoint_dataset_id, n_source) / f"diffusion_{n_source}.pt"
+            if model_variant == "finetuned":
+                checkpoint_filename = f"diffusion_{n_source}_{float(exposure_mas)}mas.pt"
+                checkpoint_path = get_model_dir(checkpoint_dataset_id, n_source) / checkpoint_filename
+                if not checkpoint_path.exists():
+                    print(f"WARNING: Finetuned checkpoint {checkpoint_path} not found. Fallback to standard base.")
+                    checkpoint_path = get_model_dir(checkpoint_dataset_id, n_source) / f"diffusion_{n_source}.pt"
+            else:
+                checkpoint_path = get_model_dir(checkpoint_dataset_id, n_source) / f"diffusion_{n_source}.pt"
+                
             gen_config_path = get_model_dir(checkpoint_dataset_id, n_source) / f"diffusion_config_{n_source}.json"
             if gen_config_path.exists():
                 with gen_config_path.open("r", encoding="utf-8") as ghandle:
@@ -130,9 +139,47 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
+# Serve the precomputed MotionScope animation GIFs/MP4s (outputs/motion_animations).
+# The directory lives outside the deployed `app` package, so its location differs between
+# a host run (sibling of the repo root) and the container (only `backend/` is bind-mounted
+# into /app, while the full workspace is mounted at /workspace). Probe known locations and
+# allow an explicit MOTION_ANIM_DIR override.
+def _resolve_motion_anim_dir() -> Optional[Path]:
+    candidates = []
+    env_dir = os.environ.get("MOTION_ANIM_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates += [
+        Path(__file__).resolve().parents[2] / "outputs" / "motion_animations",  # host repo-root/outputs
+        Path("/workspace/static_ct_recon_demo/outputs/motion_animations"),       # container /workspace mount
+        Path("/app/outputs/motion_animations"),                                   # baked into image
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+MOTION_ANIM_DIR = _resolve_motion_anim_dir()
+if MOTION_ANIM_DIR is not None:
+    app.mount("/motion-animations", StaticFiles(directory=MOTION_ANIM_DIR), name="motion-animations")
+    print(f"[motion-scope] Serving precomputed animations from {MOTION_ANIM_DIR}")
+else:
+    print("[motion-scope] WARNING: motion_animations directory not found; GIFs will 404")
+
 
 def mu_to_hu(mu_img: np.ndarray) -> np.ndarray:
     return np.maximum(mu_img, 0.0) * (1000.0 / MU_WATER_60KEV) - 1000.0
+
+
+def hu_std_to_atten(hu_std: float) -> float:
+    """Convert an HU noise standard deviation to attenuation-units std.
+
+    Matches the diffusion training scale (scripts/prep_diffusion_train.py, where
+    SIGMA_MIN/SIGMA_MAX = hu_to_atten(1)/hu_to_atten(1000)), so the generative
+    sampler runs with the same noise range the model was trained on.
+    """
+    return hu_std * MU_WATER_60KEV / 1000.0
 
 
 def encode_hu_png(hu_img: np.ndarray, win_min: float, win_max: float, figsize=(4, 4), dpi: int = 100) -> bytes:
@@ -282,10 +329,8 @@ async def simulate_full_forward(dataset_id: str, patient_id: str, slice_index: i
     ax.set_xlabel("Detector Column Index", color='white', fontsize=12)
     ax.set_ylabel("Source Index (Increasing Downward)", color='white', fontsize=12)
     ax.tick_params(colors='white', which='both', labelsize=10)
-    ax.spines['bottom'].set_color('white')
-    ax.spines['top'].set_color('white')
-    ax.spines['left'].set_color('white')
-    ax.spines['right'].set_color('white')
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
     # Add Twin X and Twin Y Axes for Angles
     # Target range: Source Angles and Detector Angles from 0 to 360 degrees
@@ -294,14 +339,16 @@ async def simulate_full_forward(dataset_id: str, patient_id: str, slice_index: i
     ax_top.set_xlim(0, 360)
     ax_top.set_xlabel("Detector Angle (Degrees)", color='white', fontsize=12)
     ax_top.tick_params(colors='white', which='both', labelsize=10)
-    ax_top.spines['top'].set_color('white')
+    for spine in ax_top.spines.values():
+        spine.set_visible(False)
 
     # Set secondary Y axis on right
     ax_right = ax.twinx()
     ax_right.set_ylim(360, 0) # Increasing downward to match source indices
     ax_right.set_ylabel("Source Angle (Degrees)", color='white', fontsize=12)
     ax_right.tick_params(colors='white', which='both', labelsize=10)
-    ax_right.spines['right'].set_color('white')
+    for spine in ax_right.spines.values():
+        spine.set_visible(False)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', facecolor='black')
@@ -380,8 +427,29 @@ async def simulate_view(dataset_id: str, patient_id: str, slice_index: int, n_so
         "timings": timings
     }
 
+@app.get("/api/filter/plot")
+async def get_filter_plot(w_low: float = 1.0, w_mid: float = 0.5, w_high: float = 0.2):
+    """Returns the base64 encoded PNG 1D plot of the FBP filter bands configuration."""
+    try:
+        img_b64 = generate_filter_graph_png(w_low, w_mid, w_high)
+        return {"image": f"data:image/png;base64,{img_b64}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/reconstruct/fbp/{dataset_id}/{patient_id}/{slice_index}/{n_source}")
-async def reconstruct_fbp(dataset_id: str, patient_id: str, slice_index: int, n_source: int, step: str = 'filter', ww: Optional[float] = None, wl: Optional[float] = None):
+async def reconstruct_fbp(
+    dataset_id: str,
+    patient_id: str,
+    slice_index: int,
+    n_source: int,
+    step: str = 'filter',
+    ww: Optional[float] = None,
+    wl: Optional[float] = None,
+    w_low: Optional[float] = None,
+    w_mid: Optional[float] = None,
+    w_high: Optional[float] = None
+):
     sino_key = (dataset_id, patient_id, slice_index, n_source)
     full_sino = sim_manager.get_sinogram(sino_key)
     
@@ -391,7 +459,10 @@ async def reconstruct_fbp(dataset_id: str, patient_id: str, slice_index: int, n_
     # Run Reconstruction step (laminogram or filter)
     import time
     start = time.time()
-    recon_hu = sim_manager.reconstruct_step(n_source, full_sino, step=step)
+    recon_hu = sim_manager.reconstruct_step(
+        n_source, full_sino, step=step,
+        w_low=w_low, w_mid=w_mid, w_high=w_high
+    )
     recon_time_ms = (time.time() - start) * 1000.0
     
     print(f"DEBUG [main.py]: step={step}, hu_mean={recon_hu.mean():.1f}, hu_std={recon_hu.std():.1f}, hu_min={recon_hu.min():.1f}, hu_max={recon_hu.max():.1f}")
@@ -419,7 +490,19 @@ async def reconstruct_fbp(dataset_id: str, patient_id: str, slice_index: int, n_
 
 
 @app.get("/api/reconstruct/runtime/{dataset_id}/{patient_id}/{slice_index}/{n_source}")
-async def reconstruct_runtime(dataset_id: str, patient_id: str, slice_index: int, n_source: int, initial_step: str = 'unfiltered', final_step: str = 'filter', ww: Optional[float] = None, wl: Optional[float] = None):
+async def reconstruct_runtime(
+    dataset_id: str,
+    patient_id: str,
+    slice_index: int,
+    n_source: int,
+    initial_step: str = 'unfiltered',
+    final_step: str = 'filter',
+    ww: Optional[float] = None,
+    wl: Optional[float] = None,
+    w_low: Optional[float] = None,
+    w_mid: Optional[float] = None,
+    w_high: Optional[float] = None
+):
     sino_key = (dataset_id, patient_id, slice_index, n_source)
     full_sino = sim_manager.get_sinogram(sino_key)
     if full_sino is None:
@@ -428,11 +511,17 @@ async def reconstruct_runtime(dataset_id: str, patient_id: str, slice_index: int
     import time
 
     initial_start = time.time()
-    initial_hu = sim_manager.reconstruct_step(n_source, full_sino, step=initial_step)
+    initial_hu = sim_manager.reconstruct_step(
+        n_source, full_sino, step=initial_step,
+        w_low=w_low, w_mid=w_mid, w_high=w_high
+    )
     initial_time_ms = (time.time() - initial_start) * 1000.0
 
     final_start = time.time()
-    final_hu = sim_manager.reconstruct_step(n_source, full_sino, step=final_step)
+    final_hu = sim_manager.reconstruct_step(
+        n_source, full_sino, step=final_step,
+        w_low=w_low, w_mid=w_mid, w_high=w_high
+    )
     final_time_ms = (time.time() - final_start) * 1000.0
 
     ds_obj = DATASET_REGISTRY.get(dataset_id)
@@ -461,6 +550,20 @@ async def reconstruct_runtime(dataset_id: str, patient_id: str, slice_index: int
     }
 
 
+def get_active_sinogram_tensor(full_sino: np.ndarray, n_source: int, device: torch.device) -> torch.Tensor:
+    sim_manager._warmup_projectors(n_source)
+    geom = sim_manager.geometry_cache[n_source]
+    pieces = []
+    for i in range(n_source):
+        mask = geom["source_module_mask"][i]
+        row = full_sino[i]
+        for m_idx, active in enumerate(mask):
+            if active:
+                pieces.append(row[m_idx * 48 : (m_idx + 1) * 48])
+    active_np = np.concatenate(pieces).astype(np.float32)
+    return torch.from_numpy(active_np).to(device)
+
+
 @app.get("/api/reconstruct/dlr/{dataset_id}/{patient_id}/{slice_index}/{n_source}")
 async def reconstruct_dlr(dataset_id: str, patient_id: str, slice_index: int, n_source: int, exposure_mas: float = 100.0, ww: Optional[float] = None, wl: Optional[float] = None):
     sino_key = (dataset_id, patient_id, slice_index, n_source)
@@ -481,19 +584,14 @@ async def reconstruct_dlr(dataset_id: str, patient_id: str, slice_index: int, n_
     model = assets["model"]
     device = sim_manager.device
 
-    target_mu_np = ds_obj.get_processed_slice(slices[slice_index]).astype(np.float32)
-    target_mu = torch.from_numpy(target_mu_np).to(device=device, dtype=torch.float32)
-
     import time
 
     fbp_start = time.time()
     fbp_hu = sim_manager.reconstruct_step(n_source, full_sino, step='filter')
     initial_time_ms = (time.time() - fbp_start) * 1000.0
 
-    init_start = time.time()
-    measurement_components = builder.build_measurement_components(target_mu, i0=float(exposure_mas) * 1e5)
-    # pinv = measurement_components["pinv"]
-    # initial_time_ms = (time.time() - init_start) * 1000.0
+    active_sino_tensor = get_active_sinogram_tensor(full_sino, n_source, device)
+    measurement_components = builder.build_measurement_components_from_sinogram(active_sino_tensor)
 
     channels = builder.build_input_channels(measurement_components).unsqueeze(0)
     with torch.inference_mode():
@@ -660,34 +758,43 @@ async def reconstruct_generative(
     steps: int = 20, sigma_max: float = 0.5, sigma_min: float = 0.001, solver: str = "heun", temperature: float = 0.0,
     exposure_mas: float = 100.0,
     ww: Optional[float] = None, wl: Optional[float] = None, job_id: Optional[str] = None,
-    num_samples: int = 4, langevin_steps: int = 100
+    num_samples: int = 4, langevin_steps: int = 100,
+    model_variant: str = "base"
 ):
+    if dataset_id not in DATASET_REGISTRY:
+        return {"error": "Dataset not found"}
+    ds_obj = DATASET_REGISTRY[dataset_id]
+    slices = ds_obj.get_patient_slices(patient_id)
+    if slice_index < 0 or slice_index >= len(slices):
+        return {"error": "Slice index out of range"}
+
     sino_key = (dataset_id, patient_id, slice_index, n_source)
     full_sino = sim_manager.get_sinogram(sino_key)
     if full_sino is None:
         return {"error": "Sinogram not found"}
+
+    # Ground-truth mu image (numpy) for the comparison panel, mirroring the other recon endpoints.
+    gt_mu_img = sim_manager.sinogram_cache.get(("processed_img", dataset_id, patient_id, slice_index))
+    if gt_mu_img is None:
+        gt_mu_img = ds_obj.get_processed_slice(slices[slice_index])
+        sim_manager.sinogram_cache[("processed_img", dataset_id, patient_id, slice_index)] = gt_mu_img
 
     # Use same cancel mechanism as iterative
     cancel_event = register_iterative_cancel(job_id) if job_id else None
 
     async def event_generator():
         import json
-        print(f"DEBUG [Generative]: Starting event_generator for {dataset_id}/{patient_id}/{slice_index} (Job: {job_id}, num_samples={num_samples}, langevin_steps={langevin_steps})")
+        print(f"DEBUG [Generative]: Starting event_generator for {dataset_id}/{patient_id}/{slice_index} (Job: {job_id}, num_samples={num_samples}, langevin_steps={langevin_steps}, model_variant={model_variant})")
         try:
             device = sim_manager.device
-            assets = get_dlr_runtime_assets(n_source, mode="generative")
+            assets = get_dlr_runtime_assets(n_source, mode="generative", model_variant=model_variant, exposure_mas=exposure_mas)
             model = assets["model"]
             builder = assets["builder"]
-            print(f"DEBUG [Generative]: Assets loaded. Device: {device}")
-
-            # 1. Get GT for reference
-            ds = DATASET_REGISTRY[dataset_id]
-            slice_path = ds.get_patient_slices(patient_id)[slice_index]
-            mu_np = ds.get_processed_slice(slice_path).astype(np.float32)
-            gt_mu = torch.from_numpy(mu_np).to(device).unsqueeze(0).unsqueeze(0)
+            print(f"DEBUG [Generative]: Assets loaded. Device: {device}, using weight: {assets.get('checkpoint_path')}")
 
             # 2. Build Measurement Components
-            comps = builder.build_measurement_components(gt_mu[0,0], i0=exposure_mas * 1e5)
+            active_sino_tensor = get_active_sinogram_tensor(full_sino, n_source, device)
+            comps = builder.build_measurement_components_from_sinogram(active_sino_tensor)
             print("DEBUG [Generative]: Measurement components built.")
 
             # Start from measured null-space FBP plus null-space noise. The range-space pinv is fixed.
@@ -712,8 +819,8 @@ async def reconstruct_generative(
             inputs[:, 4:5, ...] = xt_start
 
             # W/L for UI
-            target_ww = ww if ww is not None else ds.window_width
-            target_wl = wl if wl is not None else ds.window_center
+            target_ww = ww if ww is not None else ds_obj.window_width
+            target_wl = wl if wl is not None else ds_obj.window_center
             win_min = target_wl - (target_ww / 2)
             win_max = target_wl + (target_ww / 2)
 
@@ -732,6 +839,7 @@ async def reconstruct_generative(
             def component_to_b64(component_tensor):
                 return component_to_b64_index(component_tensor, 0)
 
+            gt_mu = torch.from_numpy(np.ascontiguousarray(gt_mu_img)).to(device).float().unsqueeze(0).unsqueeze(0)
             gt_b64 = "data:image/png;base64," + to_b64(gt_mu)
             pinv_b64 = "data:image/png;base64," + to_b64(pinv)
             full_fbp_b64 = "data:image/png;base64," + to_b64(full_fbp)
@@ -852,10 +960,8 @@ async def get_full_sinogram_image(dataset_id: str, patient_id: str, slice_index:
     ax.set_xlabel("Detector Column Index", color='white', fontsize=12)
     ax.set_ylabel("Source Index (Increasing Downward)", color='white', fontsize=12)
     ax.tick_params(colors='white', which='both', labelsize=10)
-    ax.spines['bottom'].set_color('white')
-    ax.spines['top'].set_color('white')
-    ax.spines['left'].set_color('white')
-    ax.spines['right'].set_color('white')
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
     # Add Twin X and Twin Y Axes for Angles
     # Target range: Source Angles and Detector Angles from 0 to 360 degrees
@@ -864,14 +970,16 @@ async def get_full_sinogram_image(dataset_id: str, patient_id: str, slice_index:
     ax_top.set_xlim(0, 360)
     ax_top.set_xlabel("Detector Angle (Degrees)", color='white', fontsize=12)
     ax_top.tick_params(colors='white', which='both', labelsize=10)
-    ax_top.spines['top'].set_color('white')
+    for spine in ax_top.spines.values():
+        spine.set_visible(False)
 
     # Set secondary Y axis on right
     ax_right = ax.twinx()
     ax_right.set_ylim(360, 0) # Increasing downward to match source indices
     ax_right.set_ylabel("Source Angle (Degrees)", color='white', fontsize=12)
     ax_right.tick_params(colors='white', which='both', labelsize=10)
-    ax_right.spines['right'].set_color('white')
+    for spine in ax_right.spines.values():
+        spine.set_visible(False)
     
     buf = io.BytesIO()
     fig.savefig(buf, format='png', facecolor='black')
@@ -914,6 +1022,342 @@ async def get_simulation_gif(dataset_id: str, patient_id: str, slice_index: int,
     
     return {"gif_url": gif_url}
 
+from api.simulation.eval_plots import generate_comparison_violin_plots, generate_method_square_plot_png, compute_metric_ylimits
+from api.evaluation.metrics import compute_metrics
+
+@app.get("/api/evaluation/reconstructions/{dataset_id}/{patient_id}/{slice_index}/{n_source}")
+async def get_evaluation_reconstructions(
+    dataset_id: str, patient_id: str, slice_index: int, n_source: int,
+    ww: Optional[float] = None, wl: Optional[float] = None, exposure_mas: float = 100.0
+):
+    device = sim_manager.device
+    ds_obj = DATASET_REGISTRY.get(dataset_id)
+    if ds_obj is None:
+        return {"error": "Dataset not found"}
+        
+    slices = ds_obj.get_patient_slices(patient_id)
+    if slice_index < 0 or slice_index >= len(slices):
+        return {"error": "Slice index out of range"}
+        
+    sino_key = (dataset_id, patient_id, slice_index, n_source)
+    full_sino = sim_manager.get_sinogram(sino_key)
+    if full_sino is None:
+        mu_img = sim_manager.sinogram_cache.get(("processed_img", dataset_id, patient_id, slice_index))
+        if mu_img is None:
+            mu_img = ds_obj.get_processed_slice(slices[slice_index])
+            sim_manager.sinogram_cache[("processed_img", dataset_id, patient_id, slice_index)] = mu_img
+        full_sino = sim_manager.project_full(mu_img, n_source, m_as=exposure_mas)
+        sim_manager.set_sinogram(sino_key, full_sino)
+    else:
+        mu_img = sim_manager.sinogram_cache.get(("processed_img", dataset_id, patient_id, slice_index))
+        if mu_img is None:
+            mu_img = ds_obj.get_processed_slice(slices[slice_index])
+            sim_manager.sinogram_cache[("processed_img", dataset_id, patient_id, slice_index)] = mu_img
+
+    target_ww = ww if ww is not None else ds_obj.window_width
+    target_wl = wl if wl is not None else ds_obj.window_center
+    win_min = target_wl - (target_ww / 2)
+    win_max = target_wl + (target_ww / 2)
+
+    import time
+    # 1. Ground Truth
+    gt_hu = (mu_img * 1000.0 / MU_WATER_60KEV) - 1000.0
+    gt_b64 = base64.b64encode(encode_hu_png(gt_hu, win_min, win_max)).decode('utf-8')
+
+    # 2. FlashFBP
+    fbp_start = time.time()
+    fbp_hu = sim_manager.reconstruct_step(n_source, full_sino, step='filter')
+    fbp_time = (time.time() - fbp_start) * 1000.0
+    fbp_b64 = base64.b64encode(encode_hu_png(fbp_hu, win_min, win_max)).decode('utf-8')
+
+    # 3. FidelityMBIR
+    mbir_start = time.time()
+    iter_gen = sim_manager.run_iterative_recon(
+        n_source, full_sino, num_iters=25, tv_weight=4.0, lr=0.1, use_precond=True
+    )
+    mbir_hu = fbp_hu
+    for update in iter_gen:
+        mbir_hu = update["image"]
+    mbir_time = (time.time() - mbir_start) * 1000.0
+    mbir_b64 = base64.b64encode(encode_hu_png(mbir_hu, win_min, win_max)).decode('utf-8')
+
+    # 4. NeuralSpark
+    dlr_start = time.time()
+    assets_dlr = get_dlr_runtime_assets(n_source, mode="standard")
+    model_dlr = assets_dlr["model"]
+    builder_dlr = assets_dlr["builder"]
+    active_sino_tensor = get_active_sinogram_tensor(full_sino, n_source, device)
+    measurement_components = builder_dlr.build_measurement_components_from_sinogram(active_sino_tensor)
+    channels = builder_dlr.build_input_channels(measurement_components).unsqueeze(0)
+    with torch.inference_mode():
+        diffusion_time = exposure_mas_to_diffusion_time(
+            torch.tensor([float(exposure_mas)], device=device, dtype=channels.dtype)
+        ).to(dtype=channels.dtype)
+        final_reconstruction = predict_reconstruction(model_dlr, channels, diffusion_time, builder_dlr).squeeze(0).squeeze(0)
+        dlr_hu = ((final_reconstruction.detach().cpu().numpy() * 1000.0 / MU_WATER_60KEV) - 1000.0).clip(-1000, 1500)
+    dlr_time = (time.time() - dlr_start) * 1000.0
+    dlr_b64 = base64.b64encode(encode_hu_png(dlr_hu, win_min, win_max)).decode('utf-8')
+
+    # 5. GenerativeVision
+    gen_start = time.time()
+    assets_gen = get_dlr_runtime_assets(n_source, mode="generative", model_variant="base", exposure_mas=exposure_mas)
+    model_gen = assets_gen["model"]
+    builder_gen = assets_gen["builder"]
+    # Re-use measurement_components built from sinogram for generative too
+    inputs = builder_gen.build_input_channels(measurement_components).unsqueeze(0)
+    xt_null_start = builder_gen.project_batch_null(measurement_components["measurement_null"].unsqueeze(0).unsqueeze(0))
+    xt_start = measurement_components["pinv"].unsqueeze(0).unsqueeze(0) + xt_null_start
+    inputs[:, 3:4, ...] = xt_null_start
+    inputs[:, 4:5, ...] = xt_start
+    sigma_max = hu_std_to_atten(1000.0)
+    sigma_min = hu_std_to_atten(1.0)
+    gen_iter = solve_combined_diffusion_langevin(
+        model=model_gen,
+        builder=builder_gen,
+        inputs=inputs,
+        num_steps_diff=10,
+        num_steps_lang=0,
+        sigma_max=sigma_max,
+        sigma_min=sigma_min,
+        rho=7.0,
+        temperature=0.0,
+        solver="heun",
+        device=device
+    )
+    gen_hu = dlr_hu
+    for update in gen_iter:
+        gen_hu = ((update["x0"].squeeze(0).squeeze(0).detach().cpu().numpy() * 1000.0 / MU_WATER_60KEV) - 1000.0).clip(-1000, 1500)
+    gen_time = (time.time() - gen_start) * 1000.0
+    gen_b64 = base64.b64encode(encode_hu_png(gen_hu, win_min, win_max)).decode('utf-8')
+
+    return {
+        "gt": f"data:image/png;base64,{gt_b64}",
+        "fbp": f"data:image/png;base64,{fbp_b64}",
+        "fbp_time": fbp_time,
+        "mbir": f"data:image/png;base64,{mbir_b64}",
+        "mbir_time": mbir_time,
+        "dlr": f"data:image/png;base64,{dlr_b64}",
+        "dlr_time": dlr_time,
+        "gen": f"data:image/png;base64,{gen_b64}",
+        "gen_time": gen_time
+    }
+
+
+@app.get("/api/evaluation/run")
+async def run_evaluation_benchmark(
+    request: Request,
+    scope: str,
+    num_patients: int,
+    dataset_id: str,
+    patient_id: str,
+    slice_index: int,
+    n_source: int,
+    exposure_mas: float = 100.0,
+    ww: Optional[float] = None,
+    wl: Optional[float] = None,
+    # FlashFBP filter gains (from the FlashFBP stage controls)
+    w_low: Optional[float] = None,
+    w_mid: Optional[float] = None,
+    w_high: Optional[float] = None,
+    # FidelityMBIR settings (from the iterative stage controls)
+    iters: int = 25,
+    tv: float = 4.0,
+    lr: float = 0.1,
+    precond: bool = True,
+    # GenerativeVision settings (from the GenerativeVision stage controls)
+    steps: int = 10,
+    langevin_steps: int = 0,
+    sigma_max: Optional[float] = None,
+    sigma_min: Optional[float] = None,
+    solver: str = "heun",
+    temperature: float = 0.0,
+    num_samples: int = 1,
+    model_variant: str = "base",
+):
+    # Retrieve slices to evaluate
+    eval_slices = []
+    if scope == "single_patient":
+        eval_slices = [(dataset_id, patient_id, slice_index)]
+    elif scope == "single_dataset":
+        if dataset_id not in DATASET_REGISTRY:
+            return {"error": "Dataset not found"}
+        ds = DATASET_REGISTRY[dataset_id]
+        p_ids = sorted(ds.patients)
+        for i in range(min(num_patients, len(p_ids))):
+            p = p_ids[i]
+            sl_list = ds.get_patient_slices(p)
+            if sl_list:
+                eval_slices.append((dataset_id, p, len(sl_list) // 2))
+    elif scope == "all_datasets":
+        all_candidates = []
+        for d_id in sorted(DATASET_REGISTRY.keys()):
+            cur_ds = DATASET_REGISTRY[d_id]
+            for p in sorted(cur_ds.patients):
+                sl_list = cur_ds.get_patient_slices(p)
+                if sl_list:
+                    all_candidates.append((d_id, p, len(sl_list) // 2))
+        eval_slices = all_candidates[:num_patients]
+
+    async def event_generator():
+        try:
+            device = sim_manager.device
+            assets_dlr = get_dlr_runtime_assets(n_source, mode="standard")
+            model_dlr = assets_dlr["model"]
+            builder_dlr = assets_dlr["builder"]
+
+            assets_gen = get_dlr_runtime_assets(n_source, mode="generative", model_variant=model_variant, exposure_mas=exposure_mas)
+            model_gen = assets_gen["model"]
+            builder_gen = assets_gen["builder"]
+
+            # Generative noise range: use the UI values if provided, else the training-scale defaults.
+            gen_sigma_max = sigma_max if sigma_max is not None else hu_std_to_atten(1000.0)
+            gen_sigma_min = sigma_min if sigma_min is not None else hu_std_to_atten(1.0)
+
+            acc_data = {
+                "fbp": {"rmse_hu": [], "psnr": [], "ssim": [], "lpips": []},
+                "mbir": {"rmse_hu": [], "psnr": [], "ssim": [], "lpips": []},
+                "dlr": {"rmse_hu": [], "psnr": [], "ssim": [], "lpips": []},
+                "generative": {"rmse_hu": [], "psnr": [], "ssim": [], "lpips": []}
+            }
+
+            total = len(eval_slices)
+            for index, (d_id, p_id, s_idx) in enumerate(eval_slices):
+                if await request.is_disconnected():
+                    break
+
+                cur_ds = DATASET_REGISTRY[d_id]
+                slices = cur_ds.get_patient_slices(p_id)
+                mu_img = cur_ds.get_processed_slice(slices[s_idx])
+
+                sino_key = (d_id, p_id, s_idx, n_source)
+                full_sino = sim_manager.get_sinogram(sino_key)
+                if full_sino is None:
+                    full_sino = sim_manager.project_full(mu_img, n_source, m_as=exposure_mas)
+                    sim_manager.set_sinogram(sino_key, full_sino)
+
+                # Set window scaling min/max
+                target_ww = ww if ww is not None else cur_ds.window_width
+                target_wl = wl if wl is not None else cur_ds.window_center
+                win_min = target_wl - (target_ww / 2)
+                win_max = target_wl + (target_ww / 2)
+
+                gt_hu = (mu_img * 1000.0 / MU_WATER_60KEV) - 1000.0
+
+                # 1. FlashFBP — apply the FlashFBP stage's filter gains.
+                fbp_hu = sim_manager.reconstruct_step(
+                    n_source, full_sino, step='filter', w_low=w_low, w_mid=w_mid, w_high=w_high
+                )
+                m_fbp = compute_metrics(fbp_hu, gt_hu, win_min, win_max, device=device)
+
+                # 2. FidelityMBIR — apply the iterative stage's iterations / TV / LR / precond.
+                iter_gen = sim_manager.run_iterative_recon(
+                    n_source, full_sino, num_iters=iters, tv_weight=tv, lr=lr, use_precond=precond
+                )
+                mbir_hu = fbp_hu
+                for update in iter_gen:
+                    mbir_hu = update["image"]
+                m_mbir = compute_metrics(mbir_hu, gt_hu, win_min, win_max, device=device)
+
+                # 3. NeuralSpark (DLR)
+                # Recompute the FBP from the acquired sinogram with the builder's training
+                # filter (SVD pinv + optimal 2D ramp H_ramp), identical to prep_DLR.py and
+                # prep_diffusion_train.py. The SAME measurement_components (pinv,
+                # measurement_null, full_fbp) feed BOTH NeuralSpark and GenerativeVision.
+                active_sino_tensor = get_active_sinogram_tensor(full_sino, n_source, device)
+                measurement_components = builder_dlr.build_measurement_components_from_sinogram(active_sino_tensor)
+                channels = builder_dlr.build_input_channels(measurement_components).unsqueeze(0)
+                with torch.inference_mode():
+                    diffusion_time = exposure_mas_to_diffusion_time(
+                        torch.tensor([float(exposure_mas)], device=device, dtype=channels.dtype)
+                    ).to(dtype=channels.dtype)
+                    final_reconstruction = predict_reconstruction(model_dlr, channels, diffusion_time, builder_dlr).squeeze(0).squeeze(0)
+                    dlr_hu = ((final_reconstruction.detach().cpu().numpy() * 1000.0 / MU_WATER_60KEV) - 1000.0).clip(-1000, 1500)
+                m_dlr = compute_metrics(dlr_hu, gt_hu, win_min, win_max, device=device)
+
+                # 4. GenerativeVision — use the GenerativeVision stage settings (steps,
+                # langevin steps, sigma range, temperature, solver, model variant, num_samples).
+                # Same builder FBP/filter as NeuralSpark (shared measurement_components); the
+                # diffusion state is initialised from the measured null-space FBP plus sigma_max
+                # null-space noise, exactly as the main generative endpoint / prep_diffusion_train.py.
+                M = max(1, int(num_samples))
+                pinv_t = measurement_components["pinv"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
+                measurement_null_t = measurement_components["measurement_null"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
+                noise_null = builder_gen.project_batch_null(torch.randn_like(pinv_t)) * gen_sigma_max
+                xt_null_start = builder_gen.project_batch_null(measurement_null_t + noise_null)
+                xt_start = pinv_t + xt_null_start
+                inputs = builder_gen.build_input_channels(measurement_components).unsqueeze(0).repeat(M, 1, 1, 1)
+                inputs[:, 3:4, ...] = xt_null_start
+                inputs[:, 4:5, ...] = xt_start
+                gen_iter = solve_combined_diffusion_langevin(
+                    model=model_gen,
+                    builder=builder_gen,
+                    inputs=inputs,
+                    num_steps_diff=int(steps),
+                    num_steps_lang=int(langevin_steps),
+                    sigma_max=gen_sigma_max,
+                    sigma_min=gen_sigma_min,
+                    rho=7.0,
+                    temperature=float(temperature),
+                    solver=solver,
+                    device=device
+                )
+                gen_x0 = None
+                for update in gen_iter:
+                    gen_x0 = update["x0"]
+                if gen_x0 is not None:
+                    # Posterior mean across the M samples (matches the GenerativeVision stage).
+                    gen_mu = gen_x0.mean(dim=0).squeeze(0)
+                    gen_hu = ((gen_mu.detach().cpu().numpy() * 1000.0 / MU_WATER_60KEV) - 1000.0).clip(-1000, 1500)
+                else:
+                    gen_hu = dlr_hu
+                m_gen = compute_metrics(gen_hu, gt_hu, win_min, win_max, device=device)
+
+                # Record
+                for k, v in m_fbp.items():
+                    acc_data["fbp"][k].append(v)
+                for k, v in m_mbir.items():
+                    acc_data["mbir"][k].append(v)
+                for k, v in m_dlr.items():
+                    acc_data["dlr"][k].append(v)
+                for k, v in m_gen.items():
+                    acc_data["generative"][k].append(v)
+
+                # Per-method 2x2 violin panels (RMSE HU, PSNR, SSIM, LPIPS), accumulating
+                # cumulatively across every sampled patient. Shared per-metric y-limits make
+                # the same metric directly comparable across all method panels.
+                y_limits = compute_metric_ylimits(acc_data)
+                method_plots = {
+                    "fbp": generate_method_square_plot_png(acc_data, "fbp", "#52daf2", y_limits),
+                    "mbir": generate_method_square_plot_png(acc_data, "mbir", "#75ff33", y_limits),
+                    "dlr": generate_method_square_plot_png(acc_data, "dlr", "#ffb733", y_limits),
+                    "gen": generate_method_square_plot_png(acc_data, "generative", "#ff5733", y_limits),
+                }
+
+                # Stream the reconstructions for every sampled patient so the images update
+                # live as the benchmark progresses.
+                payload = {
+                    "index": index + 1,
+                    "total": total,
+                    "patient_id": p_id,
+                    "plots": method_plots,
+                    "reconstructions": {
+                        "gt": base64.b64encode(encode_hu_png(gt_hu, win_min, win_max)).decode('utf-8'),
+                        "fbp": base64.b64encode(encode_hu_png(fbp_hu, win_min, win_max)).decode('utf-8'),
+                        "mbir": base64.b64encode(encode_hu_png(mbir_hu, win_min, win_max)).decode('utf-8'),
+                        "dlr": base64.b64encode(encode_hu_png(dlr_hu, win_min, win_max)).decode('utf-8'),
+                        "gen": base64.b64encode(encode_hu_png(gen_hu, win_min, win_max)).decode('utf-8'),
+                    }
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                await asyncio.sleep(0.01)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 LANDING_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -943,7 +1387,7 @@ LANDING_HTML = """
         }
     </script>
     <title>CT Reconstruction Laboratory</title>
-    <link rel="stylesheet" href="/static/site/landing.css">
+    <link rel="stylesheet" href="/static/site/landing.css?v=20260607-fbp-redo-3">
 </head>
 <body>
     <main class="kiosk-shell">
@@ -965,24 +1409,34 @@ LANDING_HTML = """
                             <img class="stage-button-icon" src="/static/site/workflow-icons/simulation_icon.png" alt="Simulate CT Data icon">
                         </span>
                     </button>
-                    <button class="stage-button" data-stage-button="eigen-fbp-recon" disabled type="button" aria-label="EigenFBP">
+                    <button class="stage-button" data-stage-button="eigen-fbp-recon" disabled type="button" aria-label="FlashFBP">
                         <span class="stage-button-art">
-                            <img class="stage-button-icon" src="/static/site/workflow-icons/eigenfbp_icon.png" alt="EigenFBP icon">
+                            <img class="stage-button-icon" src="/static/site/workflow-icons/flashFBP_icon.png" alt="FlashFBP icon">
                         </span>
                     </button>
-                    <button class="stage-button" data-stage-button="model-based-iterative-recon" disabled type="button" aria-label="HighFidelityMBIR">
+                    <button class="stage-button" data-stage-button="model-based-iterative-recon" disabled type="button" aria-label="FidelityMBIR">
                         <span class="stage-button-art">
-                            <img class="stage-button-icon" src="/static/site/workflow-icons/mbir_icon.png" alt="HighFidelityMBIR icon">
+                            <img class="stage-button-icon" src="/static/site/workflow-icons/fidelity_mbir_icon.png" alt="FidelityMBIR icon">
                         </span>
                     </button>
-                    <button class="stage-button" data-stage-button="deep-learning-recon" disabled type="button" aria-label="NeuralSpeed">
+                    <button class="stage-button" data-stage-button="deep-learning-recon" disabled type="button" aria-label="NeuralSpark">
                         <span class="stage-button-art">
-                            <img class="stage-button-icon" src="/static/site/workflow-icons/neuralspeed_icon.png" alt="NeuralSpeed icon">
+                            <img class="stage-button-icon" src="/static/site/workflow-icons/neuralspark_icon.png" alt="NeuralSpark icon">
                         </span>
                     </button>
                     <button class="stage-button" data-stage-button="generative-ai-recon" disabled type="button" aria-label="GenerativeVision">
                         <span class="stage-button-art">
                             <img class="stage-button-icon" src="/static/site/workflow-icons/generativevision_icon.png" alt="GenerativeVision icon">
+                        </span>
+                    </button>
+                    <button class="stage-button" data-stage-button="evaluation" disabled type="button" aria-label="Evaluation">
+                        <span class="stage-button-art">
+                            <img class="stage-button-icon" src="/static/site/workflow-icons/evaluation_icon.png" alt="Evaluation icon">
+                        </span>
+                    </button>
+                    <button class="stage-button" data-stage-button="motion-scope" disabled type="button" aria-label="MotionScope">
+                        <span class="stage-button-art">
+                            <img class="stage-button-icon" src="/static/site/workflow-icons/motioncope_icon.png" alt="MotionScope icon">
                         </span>
                     </button>
                     </nav>
@@ -1028,10 +1482,10 @@ LANDING_HTML = """
                                 </div>
                             </button>
                         </div>
-                        <div class="selection-controls" id="patient-selection-controls" style="display: none; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+                        <div class="selection-controls" id="patient-selection-controls" style="display: none; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem;">
                             <!-- Top section: Patient/Slice Sliders next to DICOM metadata -->
                             <div style="display: grid; grid-template-columns: 1.8fr 1fr; gap: 1.5rem; align-items: stretch; width: 100%;">
-                                <div class="controls-column" style="display: flex; flex-direction: column; gap: 1rem; justify-content: center;">
+                                <div class="controls-column" style="display: flex; flex-direction: column; gap: 0.35rem; justify-content: center;">
                                     <div class="control-row">
                                         <label>Patient</label>
                                         <input type="range" id="patient-slider" min="0" max="0" value="0">
@@ -1090,38 +1544,49 @@ LANDING_HTML = """
                         </div>
                     </div>
                     <div class="stage-figure-shell">
-                        <div class="simulation-layout">
-                            <div class="sim-controls-panel">
-                                <div class="control-group">
-                                    <label>System Geometry</label>
-                                    <select id="sim-geometry-select">
-                                        <option value="80">80-View Static CT</option>
-                                        <option value="240">240-View Static CT</option>
-                                    </select>
+                        <!-- Figures row at the top -->
+                        <div class="reconstruction-layout-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)) !important;">
+                            <!-- Column 1: Loaded Patient Canvas -->
+                            <div class="recon-view" id="sim-display-patient-source">
+                                <label>Loaded Patient Slice</label>
+                                <div class="stage-figure-box" style="margin: 0 auto;">
+                                    <canvas id="sim-patient-canvas" style="width: 100%; height: 100%; background: black; border: none;"></canvas>
                                 </div>
-                                <div class="control-group">
-                                    <label>Exposure (mAs)</label>
-                                    <select id="sim-exposure-select">
-                                        <option value="1">1 mAs (I0=1e5)</option>
-                                        <option value="10">10 mAs (I0=1e6)</option>
-                                        <option value="100" selected>100 mAs (I0=1e7)</option>
-                                    </select>
-                                </div>
-                                
-                                <button class="button button-primary" data-run-button="simulate-ct-data" disabled type="button">Simulate CT Data</button>
-                                <button class="button button-stop" data-stop-button="simulate-ct-data" disabled type="button">Stop</button>
                             </div>
-                            <div class="simulation-columns">
-                                <div class="sim-display" id="sim-display-geometry">
-                                    <label>System Geometry & Rays</label>
-                                    <div class="canvas-container">
-                                        <canvas id="geometry-canvas"></canvas>
-                                    </div>
+                            <!-- Column 2: System Geometry -->
+                            <div class="recon-view" id="sim-display-geometry">
+                                <label>System Geometry & Rays</label>
+                                <div class="stage-figure-box" style="margin: 0 auto;">
+                                    <canvas id="geometry-canvas" style="width: 100%; height: 100%; background: black; border: none;"></canvas>
                                 </div>
-                                <div class="sim-display" id="sim-display-projection">
-                                    <label>Sinogram Preview</label>
-                                    <div class="canvas-container">
-                                        <canvas id="sinogram-canvas"></canvas>
+                            </div>
+                            <!-- Column 3: Sinogram Preview -->
+                            <div class="recon-view" id="sim-display-projection">
+                                <label>Sinogram Preview</label>
+                                <div class="stage-figure-box" style="margin: 0 auto;">
+                                    <canvas id="sinogram-canvas" style="width: 100%; height: 100%; background: black; border: none;"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Controls panel at the bottom -->
+                        <div class="control-panel-wrapper" style="margin-bottom: 0;">
+                            <div class="control-panel compact-generative-panel" style="padding: 0.75rem 1.25rem !important;">
+                                <div class="control-rows-container">
+                                    <div class="control-row">
+                                        <label>System Geometry</label>
+                                        <select id="sim-geometry-select" style="padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(0, 27, 94, 0.2); background: white; font-size: 0.95rem; font-family: var(--font-family); color: var(--scale-900); flex-grow: 1; outline: none; height: 32px; font-weight: 500;">
+                                            <option value="80">80-View Static CT</option>
+                                            <option value="240">240-View Static CT</option>
+                                        </select>
+                                    </div>
+                                    <div class="control-row">
+                                        <label>Exposure (mAs)</label>
+                                        <select id="sim-exposure-select" style="padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(0, 27, 94, 0.2); background: white; font-size: 0.95rem; font-family: var(--font-family); color: var(--scale-900); flex-grow: 1; outline: none; height: 32px; font-weight: 500;">
+                                            <option value="1">1 mAs (I0=1e5)</option>
+                                            <option value="10">10 mAs (I0=1e6)</option>
+                                            <option value="100" selected>100 mAs (I0=1e7)</option>
+                                        </select>
                                     </div>
                                 </div>
                             </div>
@@ -1130,9 +1595,20 @@ LANDING_HTML = """
                     <div class="stage-footer">
                         <div class="stage-actions">
                             <div class="action-group">
-                                <button class="button button-ghost" data-next-stage="simulate-ct-data" disabled type="button">Next: EigenFBP</button>
+                                <button class="button button-primary" data-run-button="simulate-ct-data" disabled type="button">Simulate CT Data</button>
+                                <button class="button button-stop" data-stop-button="simulate-ct-data" disabled type="button">Stop</button>
+                                <button class="button button-ghost" data-next-stage="simulate-ct-data" disabled type="button">Next: FlashFBP</button>
                             </div>
                         </div>
+                        <div class="progress-block">
+                            <div class="progress-label">Simulation status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="simulate-ct-data"></div></div>
+                            <div class="progress-status" data-progress-status="simulate-ct-data">Idle</div>
+                            <div id="sim-gif-link-container" style="margin-top: 10px; display: none;">
+                                <a id="sim-gif-link" href="#" target="_blank" style="color: #0078d4; text-decoration: underline; font-weight: 500;">Download Simulation GIF</a>
+                            </div>
+                        </div>
+                    </div>
                         <div class="progress-block">
                             <div class="progress-label">Simulation status</div>
                             <div class="progress-track"><div class="progress-fill" data-progress-fill="simulate-ct-data"></div></div>
@@ -1147,45 +1623,90 @@ LANDING_HTML = """
                 <article class="stage-panel" data-stage-panel="eigen-fbp-recon">
                     <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <h2 class="stage-title" style="margin: 0;">EigenFBP</h2>
+                            <h2 class="stage-title" style="margin: 0;">FlashFBP</h2>
                         </div>
                     </div>
                     <div class="stage-figure-shell">
                         <div class="reconstruction-layout-grid">
                             <div class="recon-view">
                                 <label>Ground Truth</label>
-                                <div class="stage-figure-box" id="recon-box-gt"></div>
-                                <div class="timing-display">Source Data</div>
+                                <div class="stage-figure-box" id="recon-box-gt" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
                                 <label>Simulated Sinogram</label>
-                                <div class="stage-figure-box" id="recon-box-sino"></div>
+                                <div class="stage-figure-box" id="recon-box-sino" style="margin: 0 auto;"></div>
                                 <div class="timing-display" id="timing-sino">--</div>
                             </div>
                             <div class="recon-view">
                                 <label>Unfiltered Back Projection</label>
-                                <div class="stage-figure-box" id="recon-box-unfiltered" aria-label="Unfiltered BP"></div>
+                                <div class="stage-figure-box" id="recon-box-unfiltered" aria-label="Unfiltered BP" style="margin: 0 auto;"></div>
                                 <div class="timing-display" id="timing-unfiltered">-- ms</div>
                             </div>
                             <div class="recon-view">
-                                <label>Eigen Filtered Back Projection</label>
-                                <div class="stage-figure-box" id="recon-box-filtered" aria-label="Filtered Recon"></div>
-                                <div class="timing-display" id="timing-filtered">4096-mode sparse eigen filter</div>
+                                <label>FlashFBP Reconstruction</label>
+                                <div class="stage-figure-box" id="recon-box-filtered" aria-label="Filtered Recon" style="margin: 0 auto;"></div>
+                                <div class="timing-display" id="timing-filtered">-- ms</div>
+                            </div>
+                        </div>
+
+                        <div class="control-panel-wrapper" style="flex: 1.5 1 0% !important; margin-bottom: 0 !important;">
+                            <!-- Control Panel (Full Width and multi-column flexible layout) -->
+                            <div class="control-panel compact-generative-panel" style="padding: 1rem 1.25rem !important;">
+                                <div class="generative-control-grid" style="display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 0.75rem 1.5rem; width: 100%;">
+                                    <!-- Left Column: Preset buttons -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.5rem; border-right: 1px solid rgba(0, 27, 94, 0.1); padding-right: 15px; justify-content: center;">
+                                        <div class="control-row-col">
+                                            <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Filter Presets</label>
+                                            <div style="display: flex; gap: 8px; margin-top: 6px;">
+                                                <button class="button button-ghost active" id="preset-ramp-btn" type="button" style="padding: 6px 12px; font-size: 12px; min-width: auto; height: 32px; flex: 1; display: flex; align-items: center; justify-content: center; background-color: #0a63a8; color: white;">Ramp</button>
+                                                <button class="button button-ghost" id="preset-sharp-btn" type="button" style="padding: 6px 12px; font-size: 12px; min-width: auto; height: 32px; flex: 1; display: flex; align-items: center; justify-content: center;">Sharp</button>
+                                                <button class="button button-ghost" id="preset-soft-btn" type="button" style="padding: 6px 12px; font-size: 12px; min-width: auto; height: 32px; flex: 1; display: flex; align-items: center; justify-content: center;">Soft</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Middle Column: Filter Subband Sliders -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.6rem; justify-content: center;">
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 50px !important;">
+                                            <label>Low Freq Gain</label>
+                                            <input type="range" id="fbp-low-slider" min="0" max="100" step="1" value="100">
+                                            <span id="fbp-low-display" class="slider-val-badge">100%</span>
+                                        </div>
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 50px !important;">
+                                            <label>Mid Freq Gain</label>
+                                            <input type="range" id="fbp-mid-slider" min="0" max="100" step="1" value="100">
+                                            <span id="fbp-mid-display" class="slider-val-badge">100%</span>
+                                        </div>
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 50px !important;">
+                                            <label>High Freq Gain</label>
+                                            <input type="range" id="fbp-high-slider" min="0" max="100" step="1" value="100">
+                                            <span id="fbp-high-display" class="slider-val-badge">100%</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Right Column: Active Filter Plot -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.4rem; justify-content: center; border-left: 1px solid rgba(0, 27, 94, 0.1); padding-left: 15px;">
+                                        <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Active Filter Plot</label>
+                                        <div class="stage-figure-box" id="recon-box-filter-plot" style="background: white; flex-grow: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; border: 1px solid #444; height: 190px; max-height: 190px; width: 100%;">
+                                            <img id="fbp-filter-plot-img" style="width: 100%; height: 100%; object-fit: contain;" src="" alt="Filter graph plot">
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     <div class="stage-footer">
                         <div class="stage-actions">
                             <div class="action-group">
-                                <button class="button button-primary" data-run-button="eigen-fbp-recon" disabled type="button">Run EigenFBP</button>
+                                <button class="button button-primary" data-run-button="eigen-fbp-recon" disabled type="button">Run FlashFBP</button>
                                 <button class="button button-stop" data-stop-button="eigen-fbp-recon" disabled type="button">Stop</button>
-                                <button class="button button-ghost" data-next-stage="eigen-fbp-recon" disabled type="button">Next: HighFidelityMBIR</button>
+                                <button class="button button-ghost" data-next-stage="eigen-fbp-recon" disabled type="button">Next: FidelityMBIR</button>
                             </div>
                         </div>
                         <div class="progress-block">
                         </div>
                         <div class="progress-block">
-                            <div class="progress-label">EigenFBP status</div>
+                            <div class="progress-label">FlashFBP status</div>
                             <div class="progress-track"><div class="progress-fill" data-progress-fill="eigen-fbp-recon"></div></div>
                             <div class="progress-status" data-progress-status="eigen-fbp-recon">Idle</div>
                         </div>
@@ -1195,7 +1716,7 @@ LANDING_HTML = """
                 <article class="stage-panel" data-stage-panel="model-based-iterative-recon">
                     <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <h2 class="stage-title" style="margin: 0;">HighFidelityMBIR</h2>
+                            <h2 class="stage-title" style="margin: 0;">FidelityMBIR</h2>
                         </div>
                     </div>
                     
@@ -1203,72 +1724,66 @@ LANDING_HTML = """
                         <div class="iterative-layout-grid">
                             <div class="recon-view">
                                 <label>Ground Truth</label>
-                                <div class="stage-figure-box" id="iter-box-gt"></div>
+                                <div class="stage-figure-box" id="iter-box-gt" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
                                 <label>Simulated Sinogram</label>
-                                <div class="stage-figure-box" id="iter-box-sino"></div>
+                                <div class="stage-figure-box" id="iter-box-sino" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
-                                <label>EigenFBP Initialization</label>
-                                <div class="stage-figure-box" id="iter-box-init"></div>
+                                <label>FlashFBP Initialization</label>
+                                <div class="stage-figure-box" id="iter-box-init" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
-                                <label>HighFidelityMBIR</label>
-                                <div class="stage-figure-box" id="iter-box-live"></div>
+                                <label>FidelityMBIR</label>
+                                <div class="stage-figure-box" id="iter-box-live" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view recon-view-loss recon-view-tall">
                                 <label>Loss Function</label>
-                                <div class="stage-figure-box stage-figure-box-tall" id="iter-box-loss"></div>
+                                <div class="stage-figure-box stage-figure-box-tall" id="iter-box-loss" style="margin: 0 auto;"></div>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="control-panel-wrapper">
-                        <!-- Control Panel (Full Width) -->
-                        <div class="control-panel">
-                            <div class="control-row">
-                                <label>Iterations</label>
-                                <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="30">
-                                <span id="iter-count-display">30</span>
-                            </div>
-                            <div class="control-row">
-                                <label>TV Strength</label>
-                                <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="4.0">
-                                <span id="tv-strength-display">10000</span>
-                            </div>
-                            <div class="control-row">
-                                <label>Step Size / LR</label>
-                                <input type="range" id="lr-slider" min="-8" max="1" step="0.25" value="-1">
-                                <span id="lr-display">0.1</span>
-                            </div>
-                            <div class="control-row">
-                                <label>Eigen Precond.</label>
-                                <div class="checkbox-container">
-                                    <input type="checkbox" id="use-precond-check" checked>
+                        <div class="control-panel-wrapper" style="margin-bottom: 0;">
+                            <!-- Control Panel (Full Width) -->
+                            <div class="control-panel compact-generative-panel" style="padding: 0.75rem 1.25rem !important;">
+                                <div class="control-rows-container" style="display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 0.5rem 1.5rem !important;">
+                                    <div class="control-row" style="grid-template-columns: 130px 1fr 50px !important;">
+                                        <label>Iterations</label>
+                                        <input type="range" id="iter-count-slider" min="10" max="500" step="10" value="30">
+                                        <span id="iter-count-display">30</span>
+                                    </div>
+                                    <div class="control-row" style="grid-template-columns: 130px 1fr 50px !important;">
+                                        <label>TV Strength</label>
+                                        <input type="range" id="tv-strength-slider" min="-6" max="10" step="0.5" value="4.0">
+                                        <span id="tv-strength-display">10000</span>
+                                    </div>
+                                    <div class="control-row" style="grid-template-columns: 130px 1fr 50px !important;">
+                                        <label>Step Size / LR</label>
+                                        <input type="range" id="lr-slider" min="-8" max="1" step="0.25" value="-1">
+                                        <span id="lr-display">0.1</span>
+                                    </div>
+                                    <div class="control-row" style="grid-template-columns: 130px 1fr 50px !important;">
+                                        <label>Eigen Precond.</label>
+                                        <div class="checkbox-container">
+                                            <input type="checkbox" id="use-precond-check" checked>
+                                        </div>
+                                        <span></span>
+                                    </div>
                                 </div>
-                                <span></span>
                             </div>
                         </div>
                     </div>
                     <div class="stage-footer">
                         <div class="stage-actions">
                             <div class="action-group">
-                                <button class="button button-primary" data-run-button="model-based-iterative-recon" disabled type="button">Run HighFidelityMBIR</button>
+                                <button class="button button-primary" data-run-button="model-based-iterative-recon" disabled type="button">Run FidelityMBIR</button>
                                 <button class="button button-stop" data-stop-button="model-based-iterative-recon" disabled type="button">Stop</button>
-                                <button class="button button-ghost" data-next-stage="model-based-iterative-recon" disabled type="button">Next: NeuralSpeed</button>
+                                <button class="button button-ghost" data-next-stage="model-based-iterative-recon" disabled type="button">Next: NeuralSpark</button>
                             </div>
                         </div>
                         <div class="progress-block">
-                        <div class="stage-actions">
-                            <div class="action-group">
-                                <button class="button button-primary" data-run-button="model-based-iterative-recon" disabled type="button">Run HighFidelityMBIR</button>
-                                <button class="button button-stop" data-stop-button="model-based-iterative-recon" disabled type="button">Stop</button>
-                                <button class="button button-ghost" data-next-stage="model-based-iterative-recon" disabled type="button">Next: NeuralSpeed</button>
-                            </div>
-                        </div>
-                        <div class="progress-block">
-                            <div class="progress-label">HighFidelityMBIR progress</div>
+                            <div class="progress-label">FidelityMBIR progress</div>
                             <div class="progress-track"><div class="progress-fill" data-progress-fill="model-based-iterative-recon"></div></div>
                             <div class="progress-status" data-progress-status="model-based-iterative-recon">Idle</div>
                         </div>
@@ -1278,43 +1793,43 @@ LANDING_HTML = """
                 <article class="stage-panel" data-stage-panel="deep-learning-recon">
                     <div class="stage-header" style="margin-bottom: 0.5rem;">
                         <div>
-                            <h2 class="stage-title" style="margin: 0;">NeuralSpeed</h2>
+                            <h2 class="stage-title" style="margin: 0;">NeuralSpark</h2>
                         </div>
                     </div>
                     <div class="stage-figure-shell">
                         <div class="reconstruction-layout-grid">
                             <div class="recon-view">
                                 <label>Ground Truth</label>
-                                <div class="stage-figure-box" id="dlr-box-gt"></div>
-                                <div class="timing-display">Source Data</div>
+                                <div class="stage-figure-box" id="dlr-box-gt" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
                                 <label>Simulated Sinogram</label>
-                                <div class="stage-figure-box" id="dlr-box-sino"></div>
-                                <div class="timing-display" id="timing-dlr-sino">--</div>
+                                <div class="stage-figure-box" id="dlr-box-sino" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
-                                <label>FBP Initialization</label>
-                                <div class="stage-figure-box" id="dlr-box-init"></div>
+                                <label>FlashFBP Initialization</label>
+                                <div class="stage-figure-box" id="dlr-box-init" style="margin: 0 auto;"></div>
                                 <div class="timing-display" id="timing-dlr-init">-- ms</div>
                             </div>
                             <div class="recon-view">
-                                <label>NeuralSpeed Final Recon</label>
-                                <div class="stage-figure-box" id="dlr-box-final"></div>
+                                <label>NeuralSpark Final Reconstruction</label>
+                                <div class="stage-figure-box" id="dlr-box-final" style="margin: 0 auto;"></div>
                                 <div class="timing-display" id="timing-dlr-final">-- ms</div>
                             </div>
                         </div>
+                        <!-- Empty spacer (no controls here) so images match the FlashFBP page height -->
+                        <div class="control-panel-wrapper" aria-hidden="true"></div>
                     </div>
                     <div class="stage-footer">
                         <div class="stage-actions">
                             <div class="action-group">
-                                <button class="button button-primary" data-run-button="deep-learning-recon" disabled type="button">Run NeuralSpeed</button>
+                                <button class="button button-primary" data-run-button="deep-learning-recon" disabled type="button">Run NeuralSpark</button>
                                 <button class="button button-stop" data-stop-button="deep-learning-recon" disabled type="button">Stop</button>
                                 <button class="button button-ghost" data-next-stage="deep-learning-recon" disabled type="button">Next: GenerativeVision</button>
                             </div>
                         </div>
                         <div class="progress-block">
-                            <div class="progress-label">NeuralSpeed status</div>
+                            <div class="progress-label">NeuralSpark status</div>
                             <div class="progress-track"><div class="progress-fill" data-progress-fill="deep-learning-recon"></div></div>
                             <div class="progress-status" data-progress-status="deep-learning-recon">Idle</div>
                         </div>
@@ -1332,90 +1847,113 @@ LANDING_HTML = """
                         <div class="reconstruction-layout-grid">
                             <div class="recon-view">
                                 <label>Ground Truth</label>
-                                <div class="stage-figure-box" id="gen-box-gt"></div>
+                                <div class="stage-figure-box" id="gen-box-gt" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
-                                <label>Initial FBP (full)</label>
-                                <div class="stage-figure-box" id="gen-box-full-fbp"></div>
+                                <label>FlashFBP Initialization</label>
+                                <div class="stage-figure-box" id="gen-box-full-fbp" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
                                 <label>Generative Process</label>
-                                <div class="stage-figure-box" id="gen-box-xt"></div>
+                                <div class="stage-figure-box" id="gen-box-xt" style="margin: 0 auto;"></div>
                             </div>
                             <div class="recon-view">
                                 <label>Generative Reconstruction</label>
-                                <div class="stage-figure-box" id="gen-box-x0"></div>
+                                <div class="stage-figure-box" id="gen-box-x0" style="margin: 0 auto;"></div>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="control-panel-wrapper">
-                        <!-- Control Panel (Full Width and Compact Grid layout) -->
-                        <div class="control-panel compact-generative-panel">
-                            <!-- Slider Section inside Control Panel -->
-                            <div class="control-rows-container">
-                                <div class="control-row">
-                                    <label>Diffusion Steps</label>
-                                    <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="20">
-                                    <span id="diffusion-steps-display" class="slider-val-badge">20</span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Solver Mode</label>
-                                    <div class="radio-group-horizontal-compact">
-                                        <label class="compact-radio-label">
-                                            <input type="radio" name="diffusion-solver" value="heun" checked>
-                                            <span>Heun</span>
-                                        </label>
-                                        <label class="compact-radio-label">
-                                            <input type="radio" name="diffusion-solver" value="euler">
-                                            <span>Euler</span>
-                                        </label>
+                        <div class="control-panel-wrapper">
+                            <!-- Control Panel (Full Width and multi-column flexible layout) -->
+                            <div class="control-panel compact-generative-panel">
+                                <!-- Slide & Radio section inside Control Panel arranged dynamically -->
+                                <div class="generative-control-grid" style="display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 0.75rem 1.5rem; width: 100%;">
+                                    <!-- Left Column: Config Options -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.5rem; border-right: 1px solid rgba(0, 27, 94, 0.1); padding-right: 15px;">
+                                        <div class="control-row-col">
+                                            <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Model Variant</label>
+                                            <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="diffusion-model-variant" value="base" checked>
+                                                    <span>Base</span>
+                                                </label>
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="diffusion-model-variant" value="finetuned">
+                                                    <span>Finetuned</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="control-row-col" style="margin-top: 4px;">
+                                            <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Solver Mode</label>
+                                            <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="diffusion-solver" value="heun" checked>
+                                                    <span>Heun</span>
+                                                </label>
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="diffusion-solver" value="euler">
+                                                    <span>Euler</span>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <div class="control-row-col" style="margin-top: 4px;">
+                                            <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Display Mode</label>
+                                            <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="display-mode" value="sample" checked>
+                                                    <span>Sample</span>
+                                                </label>
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="display-mode" value="animation">
+                                                    <span>Animation</span>
+                                                </label>
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="display-mode" value="mean">
+                                                    <span>Mean</span>
+                                                </label>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <span></span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Max Null Noise (HU)</label>
-                                    <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3.0">
-                                    <span id="sigma-max-display" class="slider-val-badge">1000</span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Min Null Noise (HU)</label>
-                                    <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0.0">
-                                    <span id="sigma-min-display" class="slider-val-badge">1</span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Langevin Temp</label>
-                                    <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="5.0">
-                                    <span id="diffusion-temperature-display" class="slider-val-badge">5.00</span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Langevin Steps</label>
-                                    <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="0">
-                                    <span id="langevin-steps-display" class="slider-val-badge">0</span>
-                                </div>
-                                <div class="control-row">
-                                    <label>Num Samples</label>
-                                    <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="1">
-                                    <span id="num-samples-display" class="slider-val-badge">1</span>
-                                </div>
-                            </div>
 
-                            <!-- Display Mode Multiple Choice Form inside Control Panel -->
-                            <div class="display-mode-container">
-                                <label>Image Display Mode (Ensemble options when Num Samples > 1)</label>
-                                <div class="radio-group-display-mode">
-                                    <label class="display-mode-card">
-                                        <input type="radio" name="display-mode" value="sample" checked>
-                                        <span class="card-text">A) Generative Sample</span>
-                                    </label>
-                                    <label class="display-mode-card">
-                                        <input type="radio" name="display-mode" value="animation">
-                                        <span class="card-text">B) Multi-Sample Animation</span>
-                                    </label>
-                                    <label class="display-mode-card">
-                                        <input type="radio" name="display-mode" value="mean">
-                                        <span class="card-text">C) Generative Mean</span>
-                                    </label>
+                                    <!-- Middle Column: Diffusion Time & Noise Sliders -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.4rem; justify-content: center;">
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
+                                            <label>Diffusion Steps</label>
+                                            <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="20">
+                                            <span id="diffusion-steps-display" class="slider-val-badge">20</span>
+                                        </div>
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
+                                            <label>Max Null Noise</label>
+                                            <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3.0">
+                                            <span id="sigma-max-display" class="slider-val-badge">1000</span>
+                                        </div>
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
+                                            <label>Min Null Noise</label>
+                                            <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0.0">
+                                            <span id="sigma-min-display" class="slider-val-badge">1</span>
+                                        </div>
+                                        <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
+                                            <label>Num Samples</label>
+                                            <input type="range" id="num-samples-slider" min="1" max="16" step="1" value="1">
+                                            <span id="num-samples-display" class="slider-val-badge">1</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Right Column: Langevin Sliders -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.4rem; justify-content: center; border-left: 1px solid rgba(0, 27, 94, 0.1); padding-left: 15px;">
+                                        <div class="control-row" style="grid-template-columns: 110px 1fr 40px !important;">
+                                            <label>Langevin Steps</label>
+                                            <input type="range" id="langevin-steps-slider" min="0" max="500" step="10" value="0">
+                                            <span id="langevin-steps-display" class="slider-val-badge">0</span>
+                                        </div>
+                                        <div class="control-row" style="grid-template-columns: 110px 1fr 40px !important;">
+                                            <label>Langevin Temp</label>
+                                            <input type="range" id="diffusion-temperature-slider" min="0" max="5" step="0.05" value="5.0">
+                                            <span id="diffusion-temperature-display" class="slider-val-badge">5.00</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1435,6 +1973,175 @@ LANDING_HTML = """
                         </div>
                     </div>
                 </article>
+
+                <article class="stage-panel" data-stage-panel="evaluation">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
+                        <div>
+                            <h2 class="stage-title" style="margin: 0;">Evaluation Benchmarking</h2>
+                        </div>
+                    </div>
+                    
+                    <div class="stage-figure-shell">
+                        <!-- 5 columns (one per method) x 2 rows: reconstructions on top, metric panels below -->
+                        <div class="eval-grid">
+                            <!-- Column headers (method names) -->
+                            <div class="eval-col-head">Ground Truth</div>
+                            <div class="eval-col-head">FlashFBP</div>
+                            <div class="eval-col-head">FidelityMBIR</div>
+                            <div class="eval-col-head">NeuralSpark</div>
+                            <div class="eval-col-head">GenerativeVision</div>
+
+                            <!-- Row 1: reconstructions -->
+                            <div class="eval-box eval-box-img" id="eval-box-gt"></div>
+                            <div class="eval-box eval-box-img" id="eval-box-fbp"></div>
+                            <div class="eval-box eval-box-img" id="eval-box-mbir"></div>
+                            <div class="eval-box eval-box-img" id="eval-box-dlr"></div>
+                            <div class="eval-box eval-box-img" id="eval-box-gen"></div>
+
+                            <!-- Row 2: per-method 2x2 metric panels (PSNR, SSIM, LPIPS, RMSE HU) -->
+                            <div class="eval-box eval-box-plot eval-box-empty">Reference &mdash; no error metrics</div>
+                            <div class="eval-box eval-box-plot"><img id="eval-plot-fbp" src="" alt="FlashFBP benchmark metrics"></div>
+                            <div class="eval-box eval-box-plot"><img id="eval-plot-mbir" src="" alt="FidelityMBIR benchmark metrics"></div>
+                            <div class="eval-box eval-box-plot"><img id="eval-plot-dlr" src="" alt="NeuralSpark benchmark metrics"></div>
+                            <div class="eval-box eval-box-plot"><img id="eval-plot-gen" src="" alt="GenerativeVision benchmark metrics"></div>
+                        </div>
+
+                        <!-- Bottom Row: scope selector, conditional sample-size slider, and run button -->
+                        <div class="control-panel-wrapper" style="margin-bottom: 0;">
+                            <div class="control-panel compact-generative-panel" style="padding: 0.85rem 1.25rem !important;">
+                                <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem 1.75rem; width: 100%; align-items: center;">
+                                    <div class="control-row-col">
+                                        <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Benchmark Scope</label>
+                                        <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="eval-scope" value="single_patient" checked>
+                                                <span>Single Patient</span>
+                                            </label>
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="eval-scope" value="single_dataset">
+                                                <span>Single Dataset</span>
+                                            </label>
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="eval-scope" value="all_datasets">
+                                                <span>All Datasets</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="control-row" id="eval-num-patients-row" style="display: none; grid-template-columns: 150px 1fr 50px !important; align-items: center;">
+                                        <label style="font-size: 0.85rem; font-weight: 600; margin: 0;">Patients to sample (N)</label>
+                                        <input type="range" id="eval-num-patients-slider" min="1" max="100" step="1" value="10">
+                                        <span id="eval-num-patients-display" class="slider-val-badge">10</span>
+                                    </div>
+
+                                    <button class="button button-primary" id="btn-run-evaluation" type="button" style="padding: 10px 22px; font-weight: 700; white-space: nowrap;">Run Benchmark</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stage-footer">
+                        <div class="stage-actions">
+                            <div class="action-group">
+                                <!-- Standard action buttons -->
+                            </div>
+                        </div>
+                        <div class="progress-block">
+                            <div class="progress-label">Evaluation Benchmarking status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="evaluation"></div></div>
+                            <div class="progress-status" data-progress-status="evaluation">Idle</div>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="stage-panel" data-stage-panel="motion-scope">
+                    <div class="stage-header" style="margin-bottom: 0.5rem;">
+                        <div>
+                            <h2 class="stage-title" style="margin: 0;">MotionScope</h2>
+                        </div>
+                    </div>
+
+                    <div class="stage-figure-shell">
+                        <div class="reconstruction-layout-grid">
+                            <div class="recon-view">
+                                <label>Ground Truth</label>
+                                <div class="stage-figure-box" id="motion-box-gt" style="margin: 0 auto;"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>4 Rotations Per Second</label>
+                                <div class="stage-figure-box" id="motion-box-rps4" style="margin: 0 auto;"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>20 Rotations Per Second</label>
+                                <div class="stage-figure-box" id="motion-box-rps20" style="margin: 0 auto;"></div>
+                            </div>
+                            <div class="recon-view">
+                                <label>80 Rotations Per Second</label>
+                                <div class="stage-figure-box" id="motion-box-rps80" style="margin: 0 auto;"></div>
+                            </div>
+                        </div>
+
+                        <div class="control-panel-wrapper">
+                            <div class="control-panel compact-generative-panel">
+                                <div class="generative-control-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem 1.5rem; width: 100%;">
+                                    <div class="control-row-col">
+                                        <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Acquisition Views</label>
+                                        <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="motion-views" value="80" checked>
+                                                <span>80 Views</span>
+                                            </label>
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="motion-views" value="240">
+                                                <span>240 Views</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="control-row-col" style="border-left: 1px solid rgba(0, 27, 94, 0.1); padding-left: 15px;">
+                                        <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Display</label>
+                                        <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="motion-clock" value="no" checked>
+                                                <span>Original Image</span>
+                                            </label>
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="motion-clock" value="yes">
+                                                <span>Overlay 1Hz Clock</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="control-row-col" style="border-left: 1px solid rgba(0, 27, 94, 0.1); padding-left: 15px;">
+                                        <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Reconstruction Method</label>
+                                        <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="motion-method" value="flashfbp" checked>
+                                                <span>FlashFBP</span>
+                                            </label>
+                                            <label class="compact-radio-label">
+                                                <input type="radio" name="motion-method" value="neuralspark">
+                                                <span>NeuralSpark</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stage-footer">
+                        <div class="stage-actions">
+                            <div class="action-group">
+                            </div>
+                        </div>
+                        <div class="progress-block">
+                            <div class="progress-label">MotionScope status</div>
+                            <div class="progress-track"><div class="progress-fill" data-progress-fill="motion-scope"></div></div>
+                            <div class="progress-status" data-progress-status="motion-scope">Idle</div>
+                        </div>
+                    </div>
+                </article>
                 </section>
             </section>
         </section>
@@ -1446,7 +2153,7 @@ LANDING_HTML = """
             <img src="/static/branding/hms/logo.png" class="logo-hms" alt="Harvard Medical School logo" style="height: 90px; margin-right: 20px;">
         </section>
     </main>
-    <script src="/static/site/landing.js"></script>
+    <script src="/static/site/landing.js?v=20260607-fbp-redo-3"></script>
 </body>
 </html>
 """
@@ -1727,6 +2434,19 @@ PONG_HTML = """
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page():
+    def with_asset_versions(html: str) -> str:
+        css_path = Path(__file__).parent / "static" / "site" / "landing.css"
+        js_path = Path(__file__).parent / "static" / "site" / "landing.js"
+
+        css_version = int(css_path.stat().st_mtime) if css_path.exists() else 0
+        js_version = int(js_path.stat().st_mtime) if js_path.exists() else 0
+
+        return (
+            html
+            .replace('/static/site/landing.css', f'/static/site/landing.css?v={css_version}')
+            .replace('/static/site/landing.js', f'/static/site/landing.js?v={js_version}')
+        )
+
     # Dynamically extract LANDING_HTML from main.py on disk to support hot-reloading 
     # the frontend UI on browser refresh without restarting the docker container,
     # thereby keeping all warmed up GPU projection matrices in memory!
@@ -1749,10 +2469,10 @@ async def landing_page():
                 end_idx = content.find('"""', start_idx)
                 if end_idx != -1:
                     dynamic_html = content[start_idx:end_idx]
-                    return HTMLResponse(content=dynamic_html)
+                    return HTMLResponse(content=with_asset_versions(dynamic_html))
     except Exception as e:
         print(f"DEBUG: Hot reloading LANDING_HTML failed: {e}")
-    return HTMLResponse(content=LANDING_HTML)
+    return HTMLResponse(content=with_asset_versions(LANDING_HTML))
 
 
 @app.get("/pong/", response_class=HTMLResponse)

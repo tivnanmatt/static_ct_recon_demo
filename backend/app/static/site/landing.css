@@ -71,7 +71,7 @@ body {
 
 .stage-nav {
     display: grid;
-    grid-template-rows: repeat(6, minmax(0, 1fr));
+    grid-template-rows: repeat(7, minmax(0, 1fr));
     gap: 0.55rem;
     min-height: 0;
     width: 100%;
@@ -267,6 +267,7 @@ body {
     flex-direction: column;
     gap: 1.5rem;
     flex: 1; /* Stretch vertically inside parent container */
+    height: 100%;
 }
 
 .dataset-grid {
@@ -788,6 +789,7 @@ input[type="range"] {
     cursor: pointer;
 }
 
+/* Dynamic display mode card style */
 .radio-group-display-mode {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -1107,44 +1109,57 @@ input[type="range"] {
 /* Reconstruction Dual View Layout */
 .reconstruction-layout-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 15px;
     width: 100%;
+    flex: 2 1 0% !important; /* 2/3 allocated height for images */
+    min-height: 0 !important;
 }
 
 .reconstruction-layout-grid-5 {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
     gap: 12px;
     width: 100%;
+    flex: 2 1 0% !important; /* 2/3 allocated height for images */
+    min-height: 0 !important;
 }
 
 .iterative-layout-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr) 0.5fr;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 0.5fr);
     grid-template-rows: 1fr;
     gap: 15px;
     width: 100%;
     align-items: stretch;
+    flex: 2 1 0% !important; /* 2/3 allocated height for images */
+    min-height: 0 !important;
+}
+
+/* Force control-panel-wrapper to take 1/3 height if sharing with grid */
+.control-panel-wrapper {
+    flex: 1 1 0% !important; /* 1/3 allocated height for controls */
+    min-height: 0 !important;
+    margin-bottom: 0 !important;
 }
 
 @media (max-width: 1200px) {
     .reconstruction-layout-grid-5 {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
     }
 }
 
 @media (max-width: 1024px) {
     .reconstruction-layout-grid {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .reconstruction-layout-grid-5 {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .iterative-layout-grid {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         grid-template-rows: auto;
     }
 
@@ -1159,26 +1174,33 @@ input[type="range"] {
 }
 
 .recon-view {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+    /* Fixed label/timing tracks with a flexible middle track guarantee that every
+       figure box in a row gets an identical height, independent of how the label
+       wraps or whether a timing readout is present. Using em/fr units keeps the
+       boxes equal and square at every browser zoom level. */
+    display: grid;
+    grid-template-rows: 2.6em minmax(0, 1fr) 1.9em;
+    justify-items: center;
+    align-items: stretch;
     width: 100%;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 100% !important;
+    min-height: 0 !important;
 }
 
 .recon-view-tall {
     grid-column: 5;
     grid-row: 1;
-    align-self: start;
-    height: auto;
+    align-self: stretch !important;
+    height: 100% !important;
 }
 
 .recon-view-loss {
-    align-self: start;
+    align-self: stretch !important;
 }
 
 .stage-figure-box {
-    width: 100%;
-    aspect-ratio: 1 / 1;
     background: #000;
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 8px;
@@ -1188,28 +1210,115 @@ input[type="range"] {
     justify-content: center;
 }
 
+.stage-figure-box:not(#recon-box-filter-plot) {
+    width: auto !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    aspect-ratio: 1 / 1 !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 auto !important;
+}
+
 .stage-figure-box-tall {
-    aspect-ratio: 1 / 2;
-    height: auto;
-    min-height: 0;
+    aspect-ratio: 1 / 2 !important;
+    width: auto !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    min-height: 0 !important;
+}
 }
 
 .recon-view label {
     font-size: 1rem;
     color: var(--arpa-h-primary-700);
-    margin-bottom: 8px;
+    margin: 0;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    /* Fill (and center within) the fixed label track so 1- and 2-line labels
+       reserve the same vertical space across columns. */
+    grid-row: 1;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    line-height: 1.15;
+    overflow: hidden;
 }
 
 .timing-display {
-    margin-top: 10px;
+    margin: 0;
+    align-self: center;
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.9rem;
     color: #FD4497;
     background: rgba(253, 68, 151, 0.1);
     padding: 2px 8px;
     border-radius: 4px;
+}
+
+/* Evaluation page: 5 columns (one per method) x 2 rows (reconstructions on top,
+   per-method metric panels below), under a header row of method names. Two equal
+   1fr rows guarantee every image box shares one height and every metric box shares
+   another, independent of browser zoom. */
+.eval-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 12px;
+    width: 100%;
+    flex: 2 1 0% !important;
+    min-height: 0 !important;
+    align-items: center;
+    justify-items: stretch;
+}
+
+.eval-col-head {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--arpa-h-primary-700);
+    text-align: center;
+    align-self: end;
+}
+
+.eval-box {
+    height: 100%;
+    width: 100%;
+    min-height: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.eval-box-img {
+    background: #000;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.eval-box-plot {
+    background: #ffffff;
+    border: 1px solid #444;
+}
+
+.eval-box img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.eval-box-empty {
+    color: #9aa3b2;
+    font-size: 0.78rem;
+    font-style: italic;
+    text-align: center;
+    padding: 0 10px;
 }
 
 .dlr-pipeline-shell {
@@ -1339,4 +1448,102 @@ input[type="range"] {
     .dlr-arrow {
         text-align: center;
     }
+}
+
+/* ===================================================================== */
+/* Evaluation tab                                                         */
+/* ===================================================================== */
+.eval-controls {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.eval-scope-group {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.eval-scope-group label,
+.eval-samples-row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+}
+
+.eval-samples-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.eval-samples-row input[type="range"] {
+    width: 220px;
+}
+
+.eval-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 1.25rem;
+}
+
+.eval-table th,
+.eval-table td {
+    text-align: right;
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.eval-table th:first-child,
+.eval-table td:first-child {
+    text-align: left;
+}
+
+.eval-table thead th {
+    color: var(--arpa-h-primary-300, #52DAF2);
+    font-weight: 600;
+}
+
+.eval-swatch {
+    display: inline-block;
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 2px;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+}
+
+.eval-histograms {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.eval-hist-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.eval-hist-cell label {
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.eval-hist-cell canvas {
+    width: 100%;
+    height: auto;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Specific size adjustment for FBP stage to have a taller control panel and a much bigger filter plot */
+[data-stage-panel="eigen-fbp-recon"] .control-panel-wrapper {
+    flex: 1.8 1 0% !important; /* Allocation increase from 1.0 to 1.8 */
 }

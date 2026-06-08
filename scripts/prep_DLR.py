@@ -33,7 +33,7 @@ from api.simulation.svd_extensions import load_combined_svd_weights  # noqa: E40
 from ct_laboratory import StaticCTProjector2D, build_uniform_static_2d_geometry  # noqa: E402
 
 
-DEFAULT_EXPOSURES_MAS = (1.0, 10.0, 100.0)
+DEFAULT_EXPOSURES_MAS = (0.1, 1.0, 10.0, 100.0)
 WEIGHTS_DIR = ROOT / "backend" / "app" / "api" / "simulation" / "weights"
 PRECOMPUTED_DIR = ROOT / "backend" / "app" / "static" / "precomputed"
 CHANNEL_DESCRIPTIONS = [
@@ -276,6 +276,12 @@ class SpectralFeatureBuilder:
         self.coord_x = xx.to(torch.float32)
         self.coord_y = yy.to(torch.float32)
         self.fov_mask = (xx ** 2 + yy ** 2 <= 0.98).to(torch.float32)
+        
+        optimal_ramp_path = WEIGHTS_DIR / f"svd_{self.n_source}" / "optimal_2d_ramp_filter.pt"
+        if optimal_ramp_path.exists():
+            self.H_ramp = torch.load(optimal_ramp_path, map_location=device).to(device=device, dtype=torch.float32)
+        else:
+            self.H_ramp = torch.ones((height, width), device=device, dtype=torch.float32)
 
     def _build_projector(self) -> StaticCTProjector2D:
         start_time = time.time()
@@ -392,12 +398,41 @@ class SpectralFeatureBuilder:
 
             pinv = pinv_flat.reshape(self.height, self.width) * self.fov_mask
             filtered = filtered_flat.reshape(self.height, self.width) * self.fov_mask
-            null_component = filtered - pinv
+            
+            # Apply Fourier ramp filter to get the 'ramp' FBP as input instead of SVD 'optimized'
+            fbp_fft = torch.fft.fft2(filtered)
+            fbp_fft_filtered = fbp_fft * self.H_ramp
+            filtered_ramp = torch.real(torch.fft.ifft2(fbp_fft_filtered)) * self.fov_mask
+            null_component = filtered_ramp - pinv
 
         return {
             "pinv": pinv,
             "measurement_null": null_component,
-            "full_fbp": filtered,
+            "full_fbp": filtered_ramp,
+        }
+
+    def build_measurement_components_from_sinogram(self, noisy_sinogram: torch.Tensor) -> Dict[str, torch.Tensor]:
+        with torch.no_grad():
+            raw_bp = self.projector.back_project(noisy_sinogram.to(device=self.device, dtype=torch.float32))
+
+            x_flat = raw_bp.reshape(-1)
+            vt_x = torch.mv(self.vt, x_flat)
+            pinv_flat = torch.mv(self.v, vt_x / (self.s2 + 1e-9))
+            filtered_flat = self.null_weight * x_flat + torch.mv(self.v, vt_x * self.diag_diff)
+
+            pinv = pinv_flat.reshape(self.height, self.width) * self.fov_mask
+            filtered = filtered_flat.reshape(self.height, self.width) * self.fov_mask
+            
+            # Apply Fourier ramp filter to get the 'ramp' FBP as input instead of SVD 'optimized'
+            fbp_fft = torch.fft.fft2(filtered)
+            fbp_fft_filtered = fbp_fft * self.H_ramp
+            filtered_ramp = torch.real(torch.fft.ifft2(fbp_fft_filtered)) * self.fov_mask
+            null_component = filtered_ramp - pinv
+
+        return {
+            "pinv": pinv,
+            "measurement_null": null_component,
+            "full_fbp": filtered_ramp,
         }
 
     def build_input_channels(self, measurement_components: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -510,25 +545,30 @@ def maybe_load_training_state(
     checkpoint_target_mode = checkpoint.get("training_target_mode", "absolute_mu")
     if checkpoint_target_mode != TARGET_MODE_NULL_RESIDUAL_MSE:
         print(
-            f"[setup] checkpoint at {latest_checkpoint} uses training_target_mode={checkpoint_target_mode}; expected {TARGET_MODE_NULL_RESIDUAL_MSE}. Starting from scratch.",
+            f"[setup] WARNING: checkpoint at {latest_checkpoint} uses training_target_mode={checkpoint_target_mode}; expected {TARGET_MODE_NULL_RESIDUAL_MSE}. Loading weights anyway.",
             flush=True,
         )
-        return 1, float("inf")
 
     try:
         model.load_state_dict(checkpoint["model_state"])
     except RuntimeError as exc:
         print(
-            f"[setup] checkpoint at {latest_checkpoint} is incompatible with the current model for dataset={dataset_id} n_source={n_source}; starting from scratch ({exc})",
+            f"[setup] checkpoint at {latest_checkpoint} is incompatible with current model for dataset={dataset_id} n_source={n_source}; starting from scratch ({exc})",
             flush=True,
         )
         return 1, float("inf")
 
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    try:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+    except Exception as exc:
+        print(f"[setup] WARNING: optimizer state could not be loaded ({exc}), keeping active optimizer state.", flush=True)
 
     scheduler_state = checkpoint.get("scheduler_state")
     if scheduler_state is not None:
-        scheduler.load_state_dict(scheduler_state)
+        try:
+            scheduler.load_state_dict(scheduler_state)
+        except Exception as exc:
+            print(f"[setup] WARNING: scheduler state could not be loaded ({exc})", flush=True)
 
     start_epoch = int(checkpoint.get("epoch", 0)) + 1
     metrics = checkpoint.get("metrics", {})
@@ -768,7 +808,7 @@ def train_single_configuration(config: TrainingConfig, reset_training: bool = Fa
     latest_checkpoint_name = "main.pt" if is_canonical_model_id(config.dataset_id) else "latest.pt"
     best_checkpoint_name = "main.pt" if is_canonical_model_id(config.dataset_id) else "best.pt"
 
-    for epoch in range(start_epoch, config.epochs + 1):
+    for epoch in range(start_epoch, start_epoch + config.epochs):
         train_metrics = run_phase(model, optimizer, scheduler, sampler, builder, config, "train", epoch, rng_train)
         with torch.no_grad():
             val_metrics = run_phase(model, optimizer, None, sampler, builder, config, "val", epoch, rng_val)

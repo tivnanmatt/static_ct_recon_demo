@@ -1,10 +1,10 @@
 {
   "dataset_id": "main",
   "training_dataset_ids": [
-    "head",
-    "thorax",
     "abdomen",
-    "pelvic"
+    "head",
+    "pelvic",
+    "thorax"
   ],
   "n_source": 240,
   "device": "cuda:0",
@@ -16,6 +16,7 @@
   "weight_decay": 1e-05,
   "checkpoint_every": 5,
   "exposures_mas": [
+    0.1,
     1.0,
     10.0,
     100.0

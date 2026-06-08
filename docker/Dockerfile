@@ -78,7 +78,7 @@ RUN --mount=type=cache,target=/home/user/.cache/pip,uid=${USER_ID},gid=${GROUP_I
     pip3 install pandas==2.3.2
 
 RUN --mount=type=cache,target=/home/user/.cache/pip,uid=${USER_ID},gid=${GROUP_ID} \
-    pip3 install fastapi uvicorn python-multipart
+    pip3 install fastapi uvicorn python-multipart imageio
 
 RUN --mount=type=cache,target=/home/user/.cache/pip,uid=${USER_ID},gid=${GROUP_ID} \
     pip3 cache purge

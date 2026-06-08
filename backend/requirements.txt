@@ -3,3 +3,6 @@ uvicorn
 torch
 numpy
 python-multipart
+imageio
+torchmetrics
+lpips

@@ -1,22 +1,18 @@
 {
-  "dataset_id": "main",
+  "dataset_id": "head",
   "training_dataset_ids": [
-    "head",
-    "thorax",
-    "abdomen",
-    "pelvic"
+    "head"
   ],
   "n_source": 240,
   "device": "cuda:0",
-  "epochs": 100,
-  "train_steps_per_epoch": 100,
-  "val_steps_per_epoch": 10,
+  "epochs": 1,
+  "train_steps_per_epoch": 1,
+  "val_steps_per_epoch": 1,
   "batch_size": 8,
   "learning_rate": 0.0002,
   "weight_decay": 1e-05,
   "checkpoint_every": 5,
   "exposures_mas": [
-    0.1,
     1.0,
     10.0,
     100.0

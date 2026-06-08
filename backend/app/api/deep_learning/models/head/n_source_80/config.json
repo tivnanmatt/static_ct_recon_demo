@@ -1,14 +1,17 @@
 {
   "dataset_id": "head",
+  "training_dataset_ids": [
+    "head"
+  ],
   "n_source": 80,
   "device": "cuda:0",
-  "epochs": 50,
-  "train_steps_per_epoch": 8,
-  "val_steps_per_epoch": 2,
+  "epochs": 1,
+  "train_steps_per_epoch": 1,
+  "val_steps_per_epoch": 1,
   "batch_size": 16,
   "learning_rate": 0.0001,
   "weight_decay": 1e-05,
-  "checkpoint_every": 1,
+  "checkpoint_every": 5,
   "exposures_mas": [
     1.0,
     10.0,
@@ -31,6 +34,7 @@
     "coord_x_position",
     "coord_y_position"
   ],
+  "training_target_mode": "null_residual_mse",
   "model_layout": {
     "model_dir": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/head/n_source_80",
     "best_checkpoint": "/workspace/static_ct_recon_demo/backend/app/api/deep_learning/models/head/n_source_80/best.pt",

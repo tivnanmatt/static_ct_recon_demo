@@ -1,11 +1,11 @@
 import concurrent.futures
+import contextlib
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import io
 import base64
-import imageio
 import os
 import time
 import hashlib
@@ -16,6 +16,80 @@ from ct_laboratory import (
     build_uniform_static_2d_geometry, standard_image_transform_2d,
     LinearGaussianLogLikelihood, MaximumAPosterioriReconstructor, TotalVariancePrior2D
 )
+
+# Monkey-patch MaximumAPosterioriReconstructor.map_step to fix the RuntimeError:
+# "Trying to backward through the graph a second time" when preconditioner is not None.
+def patched_map_step(self, debug=False):
+    self.optimizer.zero_grad()
+    if self.preconditioner is not None:
+        self.volume_pred = self.preconditioner(self.volume_pred_preconditioned)
+    
+    log_likelihood = self.log_likelihood_fn(self.volume_pred)
+    log_prior = self.log_prior_fn(self.volume_pred)
+    
+    # Calculate Likelihood Grad Norm
+    if log_likelihood.requires_grad:
+        # Crucial Fix: If preconditioner is used, log_likelihood and log_prior share the preconditioner graph.
+        # Calling backward on log_likelihood frees the graph unless retain_graph=True,
+        # which subsequently causes backward on log_prior to crash.
+        (-1.0 * log_likelihood).backward(retain_graph=(self.preconditioner is not None and log_prior.requires_grad))
+        if self.preconditioner is not None:
+            grad_lik = self.volume_pred_preconditioned.grad.detach().clone()
+        else:
+            grad_lik = self.volume_pred.grad.detach().clone()
+    else:
+        if self.preconditioner is not None:
+            grad_lik = torch.zeros_like(self.volume_pred_preconditioned)
+        else:
+            grad_lik = torch.zeros_like(self.volume_pred)
+
+    # Calculate Prior Grad Norm (Base Score Function)
+    self.optimizer.zero_grad()
+    if self.preconditioner is not None:
+        self.volume_pred = self.preconditioner(self.volume_pred_preconditioned)
+
+    if log_prior.requires_grad:
+        (-1.0 * log_prior).backward()
+        if self.preconditioner is not None:
+            grad_prior = self.volume_pred_preconditioned.grad.detach().clone()
+        else:
+            grad_prior = self.volume_pred.grad.detach().clone()
+    else:
+        if self.preconditioner is not None:
+            grad_prior = torch.zeros_like(self.volume_pred_preconditioned)
+        else:
+            grad_prior = torch.zeros_like(self.volume_pred)
+
+    # Restore total grad for optimizer
+    if self.preconditioner is not None:
+        if self.volume_pred_preconditioned.grad is None:
+            self.volume_pred_preconditioned.grad = grad_lik + grad_prior
+        else:
+            self.volume_pred_preconditioned.grad.data = grad_lik + grad_prior
+    else:
+        if self.volume_pred.grad is None:
+            self.volume_pred.grad = grad_lik + grad_prior
+        else:
+            self.volume_pred.grad.data = grad_lik + grad_prior
+    
+    grad_norm_lik = grad_lik.norm(2).item()
+    grad_norm_prior = grad_prior.norm(2).item()
+
+    log_posterior = log_likelihood + log_prior
+    
+    if self.preconditioner is not None:
+        gn_total = self.volume_pred_preconditioned.grad.detach().norm(2).item()
+    else:
+        gn_total = self.volume_pred.grad.detach().norm(2).item()
+            
+    self.optimizer.step()
+    if self.scheduler is not None:
+        self.scheduler.step()
+    
+    return log_likelihood.item(), log_prior.item(), log_posterior.item(), grad_norm_lik, grad_norm_prior, gn_total
+
+MaximumAPosterioriReconstructor.map_step = patched_map_step
+
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Rectangle
 
@@ -120,7 +194,7 @@ class SparseEigenPreconditioner(torch.nn.Module):
         return out.reshape(shape)
 
 class SimulationManager:
-    def __init__(self):
+    def __init__(self, device=None):
         # Cache for lists of projectors: (n_source) -> list of 1-view projectors
         self.view_projectors = {}
         # Cache for all-in-one projectors: (n_source) -> 1 big projector
@@ -145,7 +219,10 @@ class SimulationManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         self.eigen_filter = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
         
         # Persistent figure for faster plotting
         self.fig_geo = None
@@ -156,6 +233,11 @@ class SimulationManager:
         
         # Timings
         self.timings = {} # (n_source) -> dict
+
+    def _device_context(self):
+        if self.device.type != "cuda":
+            return contextlib.nullcontext()
+        return torch.cuda.device(self.device)
 
     def _load_eigen_filter(self):
         # Deprecated: We now use SVDImageFilter initialized on-demand or cached.
@@ -173,158 +255,160 @@ class SimulationManager:
         return (n_source, digest)
 
     def _prepare_reconstruction_state(self, n_source, sinogram_np):
-        self._warmup_projectors(n_source)
-        full_proj = self.full_projectors[n_source]
-        geom = self.geometry_cache[n_source]
-        cache_key = self._build_reconstruction_cache_key(n_source, sinogram_np)
-        cached = self.reconstruction_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with self._device_context():
+            self._warmup_projectors(n_source)
+            full_proj = self.full_projectors[n_source]
+            geom = self.geometry_cache[n_source]
+            cache_key = self._build_reconstruction_cache_key(n_source, sinogram_np)
+            cached = self.reconstruction_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
-        sino_active = []
-        for i in range(n_source):
-            mask = geom["source_module_mask"][i]
-            view_sino = sinogram_np[i]
-            for m_idx, active in enumerate(mask):
-                if active:
-                    sino_active.append(view_sino[m_idx * 48 : (m_idx + 1) * 48])
-        sino_active = np.concatenate(sino_active)
-        sino_torch = torch.from_numpy(sino_active).float().to(self.device)
-        raw_bp = full_proj.back_project(sino_torch)
-        cached = {
-            "raw_bp": raw_bp,
-        }
-        self.reconstruction_cache[cache_key] = cached
-        return cached
+            sino_active = []
+            for i in range(n_source):
+                mask = geom["source_module_mask"][i]
+                view_sino = sinogram_np[i]
+                for m_idx, active in enumerate(mask):
+                    if active:
+                        sino_active.append(view_sino[m_idx * 48 : (m_idx + 1) * 48])
+            sino_active = np.concatenate(sino_active)
+            sino_torch = torch.from_numpy(sino_active).float().to(self.device)
+            raw_bp = full_proj.back_project(sino_torch)
+            cached = {
+                "raw_bp": raw_bp,
+            }
+            self.reconstruction_cache[cache_key] = cached
+            return cached
     
     def _warmup_projectors(self, n_source, height=256, width=256):
         """Initializes and caches both view-by-view and full projectors."""
         if n_source in self.view_projectors and n_source in self.full_projectors:
             return
 
-        print(f"DEBUG: Starting Projector Warmup for {n_source} sources...")
-        device = self.device
-        
-        # 1. Setup Image Transform (row,col) -> (x,y)
-        # REQUIRED FIX: Row=Y, Col=X for standard patient orientation
-        # We flip mapping to vertical (Y) to corrected up-down orientation
-        spacing = 1.6
-        M = torch.tensor([[0.0, spacing], [-spacing, 0.0]], device=device)
-        # Center the grid
-        b = torch.tensor([
-            -(width - 1) * spacing / 2.0, 
-            (height - 1) * spacing / 2.0
-        ], device=device)
-        
-        # 2. Geometry Parameters
-        source_radius = 400.0
-        module_radius = 366.17
-        n_module = 48
-        det_n_col = 48
-        det_spacing = 1.0
-        
-        # Lib utilities for positions
-        dummy_M = torch.eye(2, device=device).unsqueeze(0).repeat(n_source, 1, 1)
-        dummy_b = torch.zeros((n_source, 2), device=device)
-        dummy_active = torch.eye(n_source, dtype=torch.bool, device=device)
-        
-        (source_positions, module_centers, module_orientations, _) = build_uniform_static_2d_geometry(
-            n_source=n_source, source_radius=source_radius, n_module=n_module, module_radius=module_radius,
-            det_n_col=det_n_col, det_spacing=det_spacing, M_gantry=dummy_M, b_gantry=dummy_b, active_sources=dummy_active
-        )
-
-        source_module_mask = torch.zeros((n_source, n_module), dtype=torch.bool, device=device)
-        for s in range(n_source):
-            alpha_opp = (s / n_source + 0.5) % 1.0
-            m_center = int(round(alpha_opp * n_module)) % n_module
-            # Clinical: 31 modules (center + 15 each side)
-            for offset in range(-15, 16):
-                source_module_mask[s, (m_center + offset) % n_module] = True
-
-        self.geometry_cache[n_source] = {
-            "source_positions": source_positions.cpu().numpy(),
-            "module_centers": module_centers.cpu().numpy(),
-            "module_orientations": module_orientations.cpu().numpy(),
-            "det_n_col": det_n_col,
-            "det_spacing": det_spacing,
-            "module_radius": module_radius,
-            "source_module_mask": source_module_mask.cpu().numpy()
-        }
-
-        # 3. Create VIEW-BY-VIEW Projectors (Cached weights)
-        print(f"DEBUG: Building {n_source} View Projectors...")
-        view_projs = []
-        for i in range(n_source):
-            mask = torch.zeros((1, n_source), dtype=torch.bool, device=device)
-            mask[0, i] = True
+        with self._device_context():
+            print(f"DEBUG: Starting Projector Warmup for {n_source} sources...")
+            device = self.device
             
-            tvals_path = self.cache_dir / f"tvals_{height}_{width}_{n_source}_view_{i}.pt"
+            # 1. Setup Image Transform (row,col) -> (x,y)
+            # REQUIRED FIX: Row=Y, Col=X for standard patient orientation
+            # We flip mapping to vertical (Y) to corrected up-down orientation
+            spacing = 1.6
+            M = torch.tensor([[0.0, spacing], [-spacing, 0.0]], device=device)
+            # Center the grid
+            b = torch.tensor([
+                -(width - 1) * spacing / 2.0, 
+                (height - 1) * spacing / 2.0
+            ], device=device)
             
-            p = StaticCTProjector2D(
+            # 2. Geometry Parameters
+            source_radius = 400.0
+            module_radius = 366.17
+            n_module = 48
+            det_n_col = 48
+            det_spacing = 1.0
+            
+            # Lib utilities for positions
+            dummy_M = torch.eye(2, device=device).unsqueeze(0).repeat(n_source, 1, 1)
+            dummy_b = torch.zeros((n_source, 2), device=device)
+            dummy_active = torch.eye(n_source, dtype=torch.bool, device=device)
+            
+            (source_positions, module_centers, module_orientations, _) = build_uniform_static_2d_geometry(
+                n_source=n_source, source_radius=source_radius, n_module=n_module, module_radius=module_radius,
+                det_n_col=det_n_col, det_spacing=det_spacing, M_gantry=dummy_M, b_gantry=dummy_b, active_sources=dummy_active
+            )
+
+            source_module_mask = torch.zeros((n_source, n_module), dtype=torch.bool, device=device)
+            for s in range(n_source):
+                alpha_opp = (s / n_source + 0.5) % 1.0
+                m_center = int(round(alpha_opp * n_module)) % n_module
+                # Clinical: 31 modules (center + 15 each side)
+                for offset in range(-15, 16):
+                    source_module_mask[s, (m_center + offset) % n_module] = True
+
+            self.geometry_cache[n_source] = {
+                "source_positions": source_positions.cpu().numpy(),
+                "module_centers": module_centers.cpu().numpy(),
+                "module_orientations": module_orientations.cpu().numpy(),
+                "det_n_col": det_n_col,
+                "det_spacing": det_spacing,
+                "module_radius": module_radius,
+                "source_module_mask": source_module_mask.cpu().numpy()
+            }
+
+            # 3. Create VIEW-BY-VIEW Projectors (Cached weights)
+            print(f"DEBUG: Building {n_source} View Projectors...")
+            view_projs = []
+            for i in range(n_source):
+                mask = torch.zeros((1, n_source), dtype=torch.bool, device=device)
+                mask[0, i] = True
+                
+                tvals_path = self.cache_dir / f"tvals_{height}_{width}_{n_source}_view_{i}.pt"
+                
+                p = StaticCTProjector2D(
+                    n_row=height, n_col=width, M=M, b=b,
+                    source_positions=source_positions, module_centers=module_centers, module_orientations=module_orientations,
+                    det_n_col=det_n_col, det_spacing=det_spacing, source_module_mask=source_module_mask,
+                    active_sources=mask, M_gantry=torch.eye(2, device=device).unsqueeze(0), b_gantry=torch.zeros((1, 2), device=device),
+                    backend="cuda", device=device
+                )
+                
+                if tvals_path.exists():
+                    p.tvals = torch.load(tvals_path).to(device)
+                else:
+                    torch.save(p.tvals.cpu(), tvals_path)
+                view_projs.append(p)
+            self.view_projectors[n_source] = view_projs
+
+
+            # 4. Create FULL ALL-AT-ONCE Projector (Cached weights)
+            print(f"DEBUG: Building Full Static Projector for all {n_source} views...")
+            tvals_full_path = self.cache_dir / f"tvals_{height}_{width}_{n_source}_uniform_full.pt"
+            
+            # Use StaticCTProjector2D directly with the Eye mask for all frames
+            # This matches the structure of UniformStaticCTProjector2D but allows explicit mask
+            full_p = StaticCTProjector2D(
                 n_row=height, n_col=width, M=M, b=b,
                 source_positions=source_positions, module_centers=module_centers, module_orientations=module_orientations,
                 det_n_col=det_n_col, det_spacing=det_spacing, source_module_mask=source_module_mask,
-                active_sources=mask, M_gantry=torch.eye(2, device=device).unsqueeze(0), b_gantry=torch.zeros((1, 2), device=device),
+                M_gantry=dummy_M, b_gantry=dummy_b,
+                active_sources=torch.eye(n_source, dtype=torch.bool, device=device),
                 backend="cuda", device=device
             )
-            
-            if tvals_path.exists():
-                p.tvals = torch.load(tvals_path).to(device)
+            if tvals_full_path.exists():
+                full_p.tvals = torch.load(tvals_full_path).to(device)
             else:
-                torch.save(p.tvals.cpu(), tvals_path)
-            view_projs.append(p)
-        self.view_projectors[n_source] = view_projs
+                torch.save(full_p.tvals.cpu(), tvals_full_path)
+            self.full_projectors[n_source] = full_p
 
+            # 5. Compute Normalization Map (A^T A 1)
+            print(f"DEBUG: Computing Normalization map for {n_source} sources...")
+            with torch.no_grad():
+                img_ones = torch.ones((height, width), device=device)
+                # A^T (A * 1)
+                norm_map = full_p.back_project(full_p.forward(img_ones))
+                # Avoid division by zero
+                self.normalization_maps[n_source] = torch.clamp(norm_map, min=1e-6)
 
-        # 4. Create FULL ALL-AT-ONCE Projector (Cached weights)
-        print(f"DEBUG: Building Full Static Projector for all {n_source} views...")
-        tvals_full_path = self.cache_dir / f"tvals_{height}_{width}_{n_source}_uniform_full.pt"
-        
-        # Use StaticCTProjector2D directly with the Eye mask for all frames
-        # This matches the structure of UniformStaticCTProjector2D but allows explicit mask
-        full_p = StaticCTProjector2D(
-            n_row=height, n_col=width, M=M, b=b,
-            source_positions=source_positions, module_centers=module_centers, module_orientations=module_orientations,
-            det_n_col=det_n_col, det_spacing=det_spacing, source_module_mask=source_module_mask,
-            M_gantry=dummy_M, b_gantry=dummy_b,
-            active_sources=torch.eye(n_source, dtype=torch.bool, device=device),
-            backend="cuda", device=device
-        )
-        if tvals_full_path.exists():
-            full_p.tvals = torch.load(tvals_full_path).to(device)
-        else:
-            torch.save(full_p.tvals.cpu(), tvals_full_path)
-        self.full_projectors[n_source] = full_p
-
-        # 5. Compute Normalization Map (A^T A 1)
-        print(f"DEBUG: Computing Normalization map for {n_source} sources...")
-        with torch.no_grad():
-            img_ones = torch.ones((height, width), device=device)
-            # A^T (A * 1)
-            norm_map = full_p.back_project(full_p.forward(img_ones))
-            # Avoid division by zero
-            self.normalization_maps[n_source] = torch.clamp(norm_map, min=1e-6)
-
-        # 6. Timing Test (Standard backend)
-        print(f"DEBUG: Running timing tests...")
-        dummy_img = torch.zeros((height, width), device=device)
-        
-        # Time Full
-        start = time.time()
-        _ = full_p.forward(dummy_img)
-        full_time = (time.time() - start) * 1000.0 # ms
-        
-        # Time One View
-        start = time.time()
-        _ = view_projs[0].forward(dummy_img)
-        view_one_time = (time.time() - start) * 1000.0 # ms
-        
-        self.timings[n_source] = {
-            "full_time_ms": full_time,
-            "one_view_time_ms": view_one_time,
-            "total_view_time_est_ms": view_one_time * n_source
-        }
-        print(f"DEBUG: Full (Uniform): {full_time:.2f}ms | One View: {view_one_time:.2f}ms")
+            # 6. Timing Test (Standard backend)
+            print(f"DEBUG: Running timing tests...")
+            dummy_img = torch.zeros((height, width), device=device)
+            
+            # Time Full
+            start = time.time()
+            _ = full_p.forward(dummy_img)
+            full_time = (time.time() - start) * 1000.0 # ms
+            
+            # Time One View
+            start = time.time()
+            _ = view_projs[0].forward(dummy_img)
+            view_one_time = (time.time() - start) * 1000.0 # ms
+            
+            self.timings[n_source] = {
+                "full_time_ms": full_time,
+                "one_view_time_ms": view_one_time,
+                "total_view_time_est_ms": view_one_time * n_source
+            }
+            print(f"DEBUG: Full (Uniform): {full_time:.2f}ms | One View: {view_one_time:.2f}ms")
 
     def get_view_projector(self, n_source, view_idx):
         self._warmup_projectors(n_source)
@@ -332,14 +416,15 @@ class SimulationManager:
 
     def project_full(self, image_np, n_source, m_as=300.0):
         """One-shot forward projection for all views."""
-        self._warmup_projectors(n_source)
-        full_proj = self.full_projectors[n_source]
-        
-        device = self.device
-        img_torch = torch.from_numpy(image_np.astype(np.float32)).to(device)
-        
-        with torch.no_grad():
-            line_integrals = full_proj.forward(img_torch).cpu().numpy()
+        with self._device_context():
+            self._warmup_projectors(n_source)
+            full_proj = self.full_projectors[n_source]
+            
+            device = self.device
+            img_torch = torch.from_numpy(image_np.astype(np.float32)).to(device)
+            
+            with torch.no_grad():
+                line_integrals = full_proj.forward(img_torch).cpu().numpy()
         
         # Poisson Noise: mAs = 100 -> 1e7 Photons (Clinical)
         i0 = float(m_as) * 1e5
@@ -369,13 +454,14 @@ class SimulationManager:
 
     def project_view(self, image_np, n_source, view_idx, m_as=300.0):
         # image_np is mu
-        proj = self.get_view_projector(n_source, view_idx)
-        geom = self.geometry_cache[n_source]
-        
-        device = self.device
-        img_torch = torch.from_numpy(image_np.astype(np.float32)).to(device)
-        
-        line_integrals = proj.forward(img_torch).cpu().numpy().flatten()
+        with self._device_context():
+            proj = self.get_view_projector(n_source, view_idx)
+            geom = self.geometry_cache[n_source]
+            
+            device = self.device
+            img_torch = torch.from_numpy(image_np.astype(np.float32)).to(device)
+            
+            line_integrals = proj.forward(img_torch).cpu().numpy().flatten()
         
         # Poisson Noise: mAs = 100 -> 1e7 Photons (Clinical)
         i0 = float(m_as) * 1e5
@@ -399,51 +485,122 @@ class SimulationManager:
             
         return full_column
 
-    def reconstruct_step(self, n_source, sinogram_np, step='unfiltered'):
+    def reconstruct_step(self, n_source, sinogram_np, step='unfiltered', band_a=0.0, band_b=0.0, band_c=0.0, w_low=None, w_mid=None, w_high=None):
         """Debug-script-equivalent reconstruction paths for unfiltered BP, P-INV, and FBP."""
-        state = self._prepare_reconstruction_state(n_source, sinogram_np)
-        raw_bp = state["raw_bp"]
+        with self._device_context():
+            state = self._prepare_reconstruction_state(n_source, sinogram_np)
+            raw_bp = state["raw_bp"]
 
-        if step == 'unfiltered' or step == 'laminogram' or step == 'unfiltered-bp':
-            norm_map = self.normalization_maps.get(n_source)
-            if norm_map is not None:
-                recon_mu = raw_bp / norm_map
-            else:
-                recon_mu = raw_bp
-
-            print(
-                f"DEBUG: Unfiltered Step [N={n_source}] - Mu Stats: "
-                f"mean={recon_mu.mean().item():.6f}, std={recon_mu.std().item():.6f}, "
-                f"min={recon_mu.min().item():.6f}, max={recon_mu.max().item():.6f}"
-            )
-        else:
-            filter_key = f"{step}_{n_source}"
-            svd_filter = self.svd_filters.get(filter_key)
-            if svd_filter is None:
-                weight_dir = PRECOMPUTED_WEIGHTS_DIR / f"svd_{n_source}"
-                if weight_dir.exists():
-                    print(f"DEBUG: Loading SVD weights for N={n_source} from {weight_dir}...")
-                    s, v, loaded_paths = load_combined_svd_weights(weight_dir, device=self.device)
-                    print(f"DEBUG: Loaded {s.numel()} singular vectors from {len(loaded_paths) - 2} extension files")
-                    svd_filter = SVDImageFilter(s, v).to(self.device)
-                    if step == 'pinv':
-                        with torch.no_grad():
-                            svd_filter.null_weight.zero_()
-                            svd_filter.diag_diff.copy_(1.0 / (s**2))
-                    self.svd_filters[filter_key] = svd_filter
+            if step == 'unfiltered' or step == 'laminogram' or step == 'unfiltered-bp':
+                norm_map = self.normalization_maps.get(n_source)
+                if norm_map is not None:
+                    recon_mu = raw_bp / norm_map
                 else:
-                    print(f"WARNING: No SVD weights for {n_source}, returning raw back projection")
-                    svd_filter = None
+                    recon_mu = raw_bp
 
-            if svd_filter is not None:
-                recon_mu = svd_filter(raw_bp)
                 print(
-                    f"DEBUG: {step.upper()} Step [N={n_source}] - Mu Stats: "
+                    f"DEBUG: Unfiltered Step [N={n_source}] - Mu Stats: "
                     f"mean={recon_mu.mean().item():.6f}, std={recon_mu.std().item():.6f}, "
                     f"min={recon_mu.min().item():.6f}, max={recon_mu.max().item():.6f}"
                 )
             else:
-                recon_mu = raw_bp
+                filter_key = f"{step}_{n_source}"
+                svd_filter = self.svd_filters.get(filter_key)
+                if svd_filter is None:
+                    weight_dir = PRECOMPUTED_WEIGHTS_DIR / f"svd_{n_source}"
+                    if weight_dir.exists():
+                        print(f"DEBUG: Loading SVD weights for N={n_source} from {weight_dir}...")
+                        s, v, loaded_paths = load_combined_svd_weights(weight_dir, device=self.device)
+                        print(f"DEBUG: Loaded {s.numel()} singular vectors from {len(loaded_paths) - 2} extension files")
+                        svd_filter = SVDImageFilter(s, v).to(self.device)
+                        if step == 'pinv':
+                            with torch.no_grad():
+                                svd_filter.null_weight.zero_()
+                                svd_filter.diag_diff.copy_(1.0 / (s**2))
+                        self.svd_filters[filter_key] = svd_filter
+                    else:
+                        print(f"WARNING: No SVD weights for {n_source}, returning raw back projection")
+                        svd_filter = None
+
+                if svd_filter is not None:
+                    recon_mu = svd_filter(raw_bp)
+                
+                # Apply 2D Fourier filter if step is 'filter'
+                if step == 'filter' or step == 'fbp':
+                    import math
+                    # Load trained optimal 2D ramp filter
+                    optimal_ramp_path = PRECOMPUTED_WEIGHTS_DIR / f"svd_{n_source}" / "optimal_2d_ramp_filter.pt"
+                    if optimal_ramp_path.exists():
+                        H_ramp = torch.load(optimal_ramp_path, map_location=self.device)
+                    else:
+                        H_ramp = torch.ones((256, 256), device=self.device)
+                    
+                    # Compute spatial frequency bands
+                    y_freq = torch.fft.fftfreq(256, d=1.0, device=self.device).view(256, 1)
+                    x_freq = torch.fft.fftfreq(256, d=1.0, device=self.device).view(1, 256)
+                    freq_sq = y_freq**2 + x_freq**2
+                    
+                    # Sigmas in pixels matching FWHMs (1.0mm, 2.0mm, 4.0mm) with pixel spacing 0.75mm
+                    sigma_10 = 1.0 / (0.75 * 2.35482)
+                    sigma_20 = 2.0 / (0.75 * 2.35482)
+                    sigma_40 = 4.0 / (0.75 * 2.35482)
+                    
+                    # Gaussian LPFs
+                    pi2 = 2.0 * (math.pi ** 2)
+                    G10 = torch.exp(-pi2 * (sigma_10**2) * freq_sq)
+                    G20 = torch.exp(-pi2 * (sigma_20**2) * freq_sq)
+                    G40 = torch.exp(-pi2 * (sigma_40**2) * freq_sq)
+                    
+                    if w_low is not None and w_mid is not None and w_high is not None:
+                        # Direct relative linear scale factors from 0.0 to 1.0 (spanning 0-100%)
+                        Low_band = G20
+                        Mid_band = G10 - G20
+                        High_band = 1.0 - G10
+                        
+                        # Construct H_cutoff
+                        H_cutoff = w_low * Low_band + w_mid * Mid_band + w_high * High_band
+                    else:
+                        # Backward compatibility foldback scale factors from dB: linear = 10^(dB/20)
+                        w_a = 10.0 ** (band_a / 20.0)
+                        w_b = 10.0 ** (band_b / 20.0)
+                        w_c = 10.0 ** (band_c / 20.0)
+                        
+                        # Bands
+                        # Constant Base is G40 (4.0mm FWHM LPF)
+                        # Band A: 2mm to 4mm
+                        band_A_filter = G20 - G40
+                        # Band B: 1mm to 2mm
+                        band_B_filter = G10 - G20
+                        # Band C: > 1mm
+                        band_C_filter = 1.0 - G10
+                        
+                        # Construct H_cutoff
+                        H_cutoff = G40 + w_a * band_A_filter + w_b * band_B_filter + w_c * band_C_filter
+                    
+                    # Combined total filter
+                    H_total = H_ramp * H_cutoff
+                    
+                    # Apply via 2D Fourier Transform
+                    fbp_fft = torch.fft.fft2(recon_mu)
+                    fbp_fft_filtered = fbp_fft * H_total
+                    recon_mu = torch.real(torch.fft.ifft2(fbp_fft_filtered))
+                    
+                    # Re-apply FOV mask to avoid boundary leakage
+                    yy, xx = torch.meshgrid(
+                        torch.linspace(-1, 1, 256, device=self.device),
+                        torch.linspace(-1, 1, 256, device=self.device),
+                        indexing="ij"
+                    )
+                    fov_mask = (xx**2 + yy**2 <= 0.98).to(recon_mu.dtype)
+                    recon_mu = recon_mu * fov_mask
+
+                    print(
+                        f"DEBUG: {step.upper()} Step [N={n_source}] - Mu Stats: "
+                        f"mean={recon_mu.mean().item():.6f}, std={recon_mu.std().item():.6f}, "
+                        f"min={recon_mu.min().item():.6f}, max={recon_mu.max().item():.6f}"
+                    )
+                else:
+                    recon_mu = raw_bp
             
         recon_hu = (recon_mu.cpu().numpy() * 1000.0 / MU_WATER_60KEV) - 1000.0
         return np.clip(recon_hu, -1000, 1500)
@@ -863,9 +1020,17 @@ class SimulationManager:
             ax3.tick_params(colors='white', labelsize=7)
             
             buf = io.BytesIO(); fig.savefig(buf, format='png', facecolor='black'); buf.seek(0)
+            try:
+                import imageio
+            except ImportError as exc:
+                raise RuntimeError("GIF export requires imageio to be installed in the backend environment.") from exc
             frames.append(imageio.imread(buf))
             
         plt.close(fig)
+        try:
+            import imageio
+        except ImportError as exc:
+            raise RuntimeError("GIF export requires imageio to be installed in the backend environment.") from exc
         imageio.mimsave(gif_path, frames, fps=10)
         return f"/static/outputs/{gif_path.name}"
 

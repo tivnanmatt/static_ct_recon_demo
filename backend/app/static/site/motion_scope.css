@@ -1,0 +1,299 @@
+@import url('/static/branding/tokens.css');
+
+@font-face {
+    font-family: 'ATSPoppins';
+    src: url('/static/branding/ats/poppins-semibold.ttf') format('truetype');
+    font-weight: 600;
+    font-style: normal;
+}
+
+[data-stage-panel="motion-scope"] .motion-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 1.2rem;
+    min-height: 0;
+    margin-top: 0.5rem;
+    height: 100%;
+}
+
+[data-stage-panel="motion-scope"] .motion-left-column {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 1.2rem;
+    width: 100%;
+}
+
+[data-stage-panel="motion-scope"] .motion-bottom-layout {
+    display: grid;
+    grid-template-columns: 1fr 2fr 1fr;
+    gap: 1.5rem;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(15, 34, 65, 0.08);
+    border-radius: 24px;
+    padding: 1.5rem;
+    box-shadow: 0 10px 30px rgba(0, 27, 94, 0.05);
+}
+
+[data-stage-panel="motion-scope"] .motion-radio-group {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    margin-top: 0.25rem;
+}
+
+[data-stage-panel="motion-scope"] .motion-radio-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #2c3e50;
+    cursor: pointer;
+}
+
+[data-stage-panel="motion-scope"] .motion-radio-label input[type="radio"] {
+    cursor: pointer;
+}
+
+[data-stage-panel="motion-scope"] .square-method-btn {
+    border: 2px solid rgba(10, 99, 168, 0.14);
+    background: #f6f9fc;
+    border-radius: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    padding: 0.5rem;
+    aspect-ratio: 1 / 1;
+    height: 90px;
+}
+
+[data-stage-panel="motion-scope"] .square-method-btn.active {
+    background: rgba(26, 178, 214, 0.14);
+    border-color: #0a63a8;
+}
+
+[data-stage-panel="motion-scope"] .square-method-btn img {
+    height: 70px;
+    width: auto;
+    object-fit: contain;
+}
+
+[data-stage-panel="motion-scope"] .panel {
+    display: grid;
+    gap: 0.8rem;
+    padding: 1.1rem;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(15, 34, 65, 0.08);
+    box-shadow: 0 10px 30px rgba(0, 27, 94, 0.05);
+    min-height: 0;
+    align-content: start;
+}
+
+[data-stage-panel="motion-scope"] .panel-heading {
+    display: flex;
+    gap: 0.8rem;
+    align-items: center;
+}
+
+[data-stage-panel="motion-scope"] .panel-heading h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    color: var(--arpa-h-primary-900);
+}
+
+[data-stage-panel="motion-scope"] .panel-heading p {
+    margin: 0.2rem 0 0;
+    color: #4b627f;
+    line-height: 1.3;
+    font-size: 0.8rem;
+    font-family: Arial, sans-serif;
+}
+
+[data-stage-panel="motion-scope"] .panel-icon {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+}
+
+[data-stage-panel="motion-scope"] .image-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 16px;
+    overflow: hidden;
+    background: linear-gradient(180deg, #07111f 0%, #15253d 100%);
+    border: 1px solid rgba(8, 17, 31, 0.4);
+}
+
+[data-stage-panel="motion-scope"] .hero-frame {
+    /* controlled by aspect-ratio */
+}
+
+[data-stage-panel="motion-scope"] .image-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+[data-stage-panel="motion-scope"] .frame-title {
+    position: absolute;
+    top: 0.6rem;
+    left: 0.6rem;
+    z-index: 1;
+    padding: 0.25rem 0.45rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.88);
+    color: #12304f;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
+[data-stage-panel="motion-scope"] .control-stack,
+[data-stage-panel="motion-scope"] .control-grid {
+    display: grid;
+    gap: 0.6rem;
+}
+
+[data-stage-panel="motion-scope"] .control-row,
+[data-stage-panel="motion-scope"] .control-grid label {
+    display: grid;
+    grid-template-columns: 6.5rem 1fr auto;
+    gap: 0.6rem;
+    align-items: center;
+    font-size: 0.85rem;
+    color: #334e68;
+}
+
+[data-stage-panel="motion-scope"] .control-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+[data-stage-panel="motion-scope"] .control-grid label {
+    grid-template-columns: 1fr;
+    align-items: start;
+}
+
+[data-stage-panel="motion-scope"] .control-grid span {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+}
+
+[data-stage-panel="motion-scope"] input[type='range'],
+[data-stage-panel="motion-scope"] select {
+    width: 100%;
+}
+
+[data-stage-panel="motion-scope"] .toggle-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.8rem;
+    align-items: center;
+    font-family: Arial, sans-serif;
+    font-size: 0.85rem;
+}
+
+[data-stage-panel="motion-scope"] .meta-chip {
+    padding: 0.3rem 0.55rem;
+    border-radius: 999px;
+    background: rgba(10, 99, 168, 0.12);
+    color: #0a63a8;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+[data-stage-panel="motion-scope"] .dual-frame {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+}
+
+[data-stage-panel="motion-scope"] .method-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+}
+
+[data-stage-panel="motion-scope"] .method-card {
+    border-radius: 16px;
+    border: 1px solid rgba(10, 99, 168, 0.14);
+    background: #f6f9fc;
+    padding: 0.6rem;
+    display: grid;
+    justify-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+[data-stage-panel="motion-scope"] .method-card.active {
+    background: rgba(26, 178, 214, 0.14);
+    border-color: rgba(10, 99, 168, 0.42);
+    color: #0a63a8;
+}
+
+[data-stage-panel="motion-scope"] .method-card input {
+    display: none;
+}
+
+[data-stage-panel="motion-scope"] .method-card img {
+    width: 100%;
+    max-width: 120px;
+    height: 48px;
+    object-fit: contain;
+}
+
+[data-stage-panel="motion-scope"] .recon-frame {
+    /* controlled by aspect-ratio */
+}
+
+[data-stage-panel="motion-scope"] .status-box,
+[data-stage-panel="motion-scope"] .device-box {
+    padding: 0.6rem 0.8rem;
+    border-radius: 12px;
+    background: #f1f6fb;
+    color: #294362;
+    line-height: 1.3;
+    font-family: Arial, sans-serif;
+    font-size: 0.8rem;
+}
+
+[data-stage-panel="motion-scope"] .primary-button {
+    border: 0;
+    border-radius: 12px;
+    padding: 0.7rem 1.1rem;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #0a63a8 0%, #1ab2d6 100%);
+    color: white;
+    min-width: 10rem;
+    font-size: 0.9rem;
+    box-shadow: 0 4px 12px rgba(10, 99, 168, 0.15);
+    transition: all 0.2s ease;
+}
+
+[data-stage-panel="motion-scope"] .primary-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(10, 99, 168, 0.25);
+}
+
+[data-stage-panel="motion-scope"] .button-row {
+    display: flex;
+    justify-content: flex-start;
+}
+
+@media (max-width: 1400px) {
+    [data-stage-panel="motion-scope"] .motion-grid {
+        grid-template-columns: 1fr;
+        overflow-y: auto;
+    }
+}

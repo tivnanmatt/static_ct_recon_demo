@@ -120,12 +120,14 @@ let currentPatientIds = [];
 const players = {};
 const datasetDefaults = {}; // Store WW/WL defaults per dataset
 let workflowState = 'START'; // 'START', 'LOADED', 'SIMULATED'
+let isFbpRunComplete = false;
 const stageRunState = {
     'simulate-ct-data': { controller: null, jobId: null },
     'eigen-fbp-recon': { controller: null, jobId: null },
     'model-based-iterative-recon': { controller: null, jobId: null },
     'deep-learning-recon': { controller: null, jobId: null },
-    'generative-ai-recon': { controller: null, jobId: null }
+    'generative-ai-recon': { controller: null, jobId: null },
+    'evaluation': { controller: null, jobId: null }
 };
 
 let currentX0List = null;
@@ -309,11 +311,10 @@ function resetEigenStage(status = 'Idle') {
 }
 
 function resetIterativeStage(status = 'Idle') {
-    const boxInit = document.getElementById('iter-box-init');
     const boxLoss = document.getElementById('iter-box-loss');
     const boxLive = document.getElementById('iter-box-live');
 
-    if (boxInit) boxInit.innerHTML = '';
+    // Keep iter-box-init (FlashFBP initialization) visible across resets/stops.
     if (boxLoss) boxLoss.innerHTML = '';
     if (boxLive) boxLive.innerHTML = '';
     resetStageProgress('model-based-iterative-recon', status);
@@ -344,7 +345,7 @@ function buildGenerativeJobId() {
 
 function updateWorkflowUI() {
     const sidebarSim = document.querySelector('[data-stage-button="simulate-ct-data"]');
-    const sidebarRecons = document.querySelectorAll('[data-stage-button$="-recon"]');
+    const sidebarRecons = document.querySelectorAll('[data-stage-button$="-recon"], [data-stage-button="evaluation"], [data-stage-button="motion-scope"]');
     
     const runSim = document.querySelector('[data-run-button="simulate-ct-data"]');
     const runRecons = document.querySelectorAll('[data-run-button$="-recon"]');
@@ -378,6 +379,7 @@ function updateWorkflowUI() {
 function resetWorkflow() {
     abortActiveRuns();
     workflowState = 'START';
+    isFbpRunComplete = false;
 
     clearCanvas('geometry-canvas');
     clearCanvas('sinogram-canvas');
@@ -595,6 +597,34 @@ function updateLiveFrame() {
         if (player) {
             player.setLockedState(true, pId, sIdx);
         }
+
+        // Draw active patient frame onto simulation patient canvas if it exists
+        drawSimulationStagePatientFrame(pId, sIdx);
+
+        // Auto-load patient into evaluation view if evaluation stage is active
+        const evalPanel = document.querySelector('[data-stage-panel="evaluation"]');
+        if (evalPanel && evalPanel.classList.contains('active')) {
+            prepareEvaluationComparison();
+        }
+    }
+}
+
+async function drawSimulationStagePatientFrame(pId, sIdx) {
+    const canvas = document.getElementById('sim-patient-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    
+    const key = `${pId}-${sIdx}-${windowWidth}-${windowLevel}`;
+    const player = players[selectedDataset];
+    if (player) {
+        const img = await player.getFrame(pId, sIdx);
+        if (img) {
+            if (canvas.width !== img.width || canvas.height !== img.height) {
+                canvas.width = img.width;
+                canvas.height = img.height;
+            }
+            ctx.drawImage(img, 0, 0);
+        }
     }
 }
 
@@ -653,15 +683,16 @@ function switchStage(stageId) {
         if (timingFiltered) timingFiltered.textContent = '-- ms';
 
         prepareReconComparison();
+        updateFilterPlot();
     }
 
     if (stageId === 'model-based-iterative-recon') {
-        const boxInit = document.getElementById('iter-box-init');
         const boxLoss = document.getElementById('iter-box-loss');
         const boxLive = document.getElementById('iter-box-live');
-        if (boxInit) boxInit.innerHTML = '';
         if (boxLoss) boxLoss.innerHTML = '';
         if (boxLive) boxLive.innerHTML = '';
+        // Do not blank iter-box-init: the FlashFBP initialization stays visible while
+        // prepareIterativeComparison() recomputes it (server-side, even if FlashFBP was never run).
         prepareIterativeComparison();
     }
 
@@ -676,6 +707,45 @@ function switchStage(stageId) {
         if (timingFinal) timingFinal.textContent = '-- ms';
         prepareNeuralComparison();
     }
+
+    if (stageId === 'evaluation') {
+        prepareEvaluationComparison();
+    }
+
+    if (stageId === 'motion-scope') {
+        updateMotionScopeGifs();
+    }
+}
+
+// MotionScope: load the precomputed animation GIFs that match the current radio selections.
+function updateMotionScopeGifs() {
+    const views = document.querySelector('input[name="motion-views"]:checked')?.value || '80';
+    const clock = document.querySelector('input[name="motion-clock"]:checked')?.value || 'no';
+    const method = document.querySelector('input[name="motion-method"]:checked')?.value || 'flashfbp';
+
+    const base = '/motion-animations';
+    const setGif = (boxId, src) => {
+        const box = document.getElementById(boxId);
+        if (!box) return;
+        box.innerHTML = '';
+        const img = document.createElement('img');
+        // Cache-bust so switching radios always restarts the animation from frame 0.
+        img.src = `${src}?t=${Date.now()}`;
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'contain';
+        img.style.backgroundColor = 'black';
+        box.appendChild(img);
+    };
+
+    setGif('motion-box-gt', `${base}/gt_clock_${clock}.gif`);
+    [4, 20, 80].forEach(rps => {
+        setGif(`motion-box-rps${rps}`,
+            `${base}/recon_views_${views}_clock_${clock}_method_${method}_rps_${rps}.gif`);
+    });
+
+    const status = document.querySelector('[data-progress-status="motion-scope"]');
+    if (status) status.textContent = `Playing ${views} views · ${method} · clock ${clock}`;
 }
 
 async function prepareIterativeComparison() {
@@ -731,7 +801,19 @@ async function prepareReconComparison() {
 
     const boxGT = document.getElementById('recon-box-gt');
     const boxSino = document.getElementById('recon-box-sino');
+    const boxUnfiltered = document.getElementById('recon-box-unfiltered');
+    const boxFiltered = document.getElementById('recon-box-filtered');
     const timingSino = document.getElementById('timing-sino');
+    const timingUnfiltered = document.getElementById('timing-unfiltered');
+    const timingFiltered = document.getElementById('timing-filtered');
+
+    const sliderLow = document.getElementById('fbp-low-slider');
+    const sliderMid = document.getElementById('fbp-mid-slider');
+    const sliderHigh = document.getElementById('fbp-high-slider');
+
+    const wLow = sliderLow ? parseFloat(sliderLow.value) / 100.0 : 1.0;
+    const wMid = sliderMid ? parseFloat(sliderMid.value) / 100.0 : 1.0;
+    const wHigh = sliderHigh ? parseFloat(sliderHigh.value) / 100.0 : 1.0;
 
     const updateImageView = (container, src, isSino = false) => {
         if (!container) return;
@@ -746,21 +828,100 @@ async function prepareReconComparison() {
     };
 
     try {
-        const [respGT, respSino] = await Promise.all([
+        const [respGT, respSino, respUnfiltered, respFiltered] = await Promise.all([
             fetch(`/api/preview/${selectedDataset}/${pId}/${sIdx}?ww=${windowWidth}&wl=${windowLevel}`),
-            fetch(`/api/reconstruct/full-sinogram/${selectedDataset}/${pId}/${sIdx}/${numSources}`)
+            fetch(`/api/reconstruct/full-sinogram/${selectedDataset}/${pId}/${sIdx}/${numSources}`),
+            fetch(`/api/reconstruct/fbp/${selectedDataset}/${pId}/${sIdx}/${numSources}?step=unfiltered&ww=${windowWidth}&wl=${windowLevel}`),
+            fetch(`/api/reconstruct/fbp/${selectedDataset}/${pId}/${sIdx}/${numSources}?step=filter&ww=${windowWidth}&wl=${windowLevel}&w_low=${wLow}&w_mid=${wMid}&w_high=${wHigh}`)
         ]);
 
         const resGT = await respGT.blob();
         const resSino = await respSino.json();
+        const resUnfiltered = await respUnfiltered.json();
+        const resFiltered = await respFiltered.json();
         
         if (boxGT) updateImageView(boxGT, URL.createObjectURL(resGT));
         if (resSino.sinogram_image) {
             updateImageView(boxSino, resSino.sinogram_image, true);
             if (timingSino) timingSino.textContent = `${numSources} Views`;
         }
+        if (resUnfiltered.reconstruction_image) {
+            updateImageView(boxUnfiltered, resUnfiltered.reconstruction_image);
+            if (timingUnfiltered) timingUnfiltered.textContent = `${resUnfiltered.recon_time_ms.toFixed(1)} ms`;
+        }
+        if (resFiltered.reconstruction_image) {
+            updateImageView(boxFiltered, resFiltered.reconstruction_image);
+            if (timingFiltered) timingFiltered.textContent = `${resFiltered.recon_time_ms.toFixed(1)} ms`;
+        }
     } catch (e) {
         console.error("Failed to prepare recon comparison", e);
+    }
+}
+
+async function updateFilterPlot() {
+    try {
+        const sliderLow = document.getElementById('fbp-low-slider');
+        const sliderMid = document.getElementById('fbp-mid-slider');
+        const sliderHigh = document.getElementById('fbp-high-slider');
+
+        const wLow = sliderLow ? parseFloat(sliderLow.value) / 100.0 : 1.0;
+        const wMid = sliderMid ? parseFloat(sliderMid.value) / 100.0 : 1.0;
+        const wHigh = sliderHigh ? parseFloat(sliderHigh.value) / 100.0 : 1.0;
+        
+        const resp = await fetch(`/api/filter/plot?w_low=${wLow}&w_mid=${wMid}&w_high=${wHigh}`);
+        const data = await resp.json();
+        if (data.image) {
+            const plotImg = document.getElementById('fbp-filter-plot-img');
+            if (plotImg) plotImg.src = data.image;
+        }
+    } catch (e) {
+        console.error("Failed to update FBP filter plot", e);
+    }
+}
+
+async function updateFbpReconstruction() {
+    try {
+        const pIdx = document.getElementById('patient-slider').value;
+        if (!currentPatientIds || currentPatientIds.length === 0) return;
+        const pId = currentPatientIds[pIdx];
+        if (!pId) return;
+        const sIdx = document.getElementById('slice-slider').value;
+        const numSources = parseInt(document.getElementById('sim-geometry-select').value);
+
+        const sliderLow = document.getElementById('fbp-low-slider');
+        const sliderMid = document.getElementById('fbp-mid-slider');
+        const sliderHigh = document.getElementById('fbp-high-slider');
+
+        const wLow = sliderLow ? parseFloat(sliderLow.value) / 100.0 : 1.0;
+        const wMid = sliderMid ? parseFloat(sliderMid.value) / 100.0 : 1.0;
+        const wHigh = sliderHigh ? parseFloat(sliderHigh.value) / 100.0 : 1.0;
+
+        const boxFiltered = document.getElementById('recon-box-filtered');
+        const timingFiltered = document.getElementById('timing-filtered');
+
+        const updateImageView = (container, src) => {
+            if (!container) return;
+            container.innerHTML = '';
+            const img = document.createElement('img');
+            img.src = src;
+            img.style.width = '100%';
+            img.style.height = '100%';
+            img.style.objectFit = 'contain';
+            img.style.backgroundColor = 'black';
+            container.appendChild(img);
+        };
+
+        const resp = await fetch(`/api/reconstruct/fbp/${selectedDataset}/${pId}/${sIdx}/${numSources}?step=filter&ww=${windowWidth}&wl=${windowLevel}&w_low=${wLow}&w_mid=${wMid}&w_high=${wHigh}`);
+        const res = await resp.json();
+        
+        if (res.reconstruction_image) {
+            updateImageView(boxFiltered, res.reconstruction_image);
+            if (timingFiltered) {
+                timingFiltered.textContent = `${res.recon_time_ms.toFixed(1)} ms`;
+            }
+        }
+    } catch (e) {
+        console.error("Failed to dynamically update FBP reconstruction:", e);
     }
 }
 
@@ -801,7 +962,217 @@ async function prepareNeuralComparison() {
             if (timingSino) timingSino.textContent = `${numSources} Views`;
         }
     } catch (e) {
-        console.error('Failed to prepare NeuralSpeed comparison', e);
+        console.error('Failed to prepare NeuralSpark comparison', e);
+    }
+}
+
+async function prepareEvaluationComparison() {
+    const pIdx = document.getElementById('patient-slider').value;
+    if (!currentPatientIds || currentPatientIds.length === 0) return;
+    const pId = currentPatientIds[pIdx];
+    const sIdx = document.getElementById('slice-slider').value;
+    const numSources = parseInt(document.getElementById('sim-geometry-select').value);
+
+    const boxGT = document.getElementById('eval-box-gt');
+    const boxFBP = document.getElementById('eval-box-fbp');
+    const boxMBIR = document.getElementById('eval-box-mbir');
+    const boxDLR = document.getElementById('eval-box-dlr');
+    const boxGEN = document.getElementById('eval-box-gen');
+
+    const timingFBP = document.getElementById('timing-eval-fbp');
+    const timingMBIR = document.getElementById('timing-eval-mbir');
+    const timingDLR = document.getElementById('timing-eval-dlr');
+    const timingGEN = document.getElementById('timing-eval-gen');
+
+    const updateImageView = (container, src) => {
+        if (!container) return;
+        container.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = src;
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'contain';
+        img.style.backgroundColor = 'black';
+        container.appendChild(img);
+    };
+
+    const showLoading = (container) => {
+        if (!container) return;
+        container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:0.8rem;">Benchmarking...</div>';
+    };
+
+    [boxGT, boxFBP, boxMBIR, boxDLR, boxGEN].forEach(showLoading);
+    [timingFBP, timingMBIR, timingDLR, timingGEN].forEach(t => { if (t) t.textContent = '-- ms'; });
+
+    try {
+        const resp = await fetch(`/api/evaluation/reconstructions/${selectedDataset}/${pId}/${sIdx}/${numSources}?ww=${windowWidth}&wl=${windowLevel}`);
+        const res = await resp.json();
+
+        if (res.error) {
+            console.error("Evaluation error:", res.error);
+            return;
+        }
+
+        if (res.gt) updateImageView(boxGT, res.gt);
+        if (res.fbp) updateImageView(boxFBP, res.fbp);
+        if (res.mbir) updateImageView(boxMBIR, res.mbir);
+        if (res.dlr) updateImageView(boxDLR, res.dlr);
+        if (res.gen) updateImageView(boxGEN, res.gen);
+
+        if (timingFBP && res.fbp_time) timingFBP.textContent = `${res.fbp_time.toFixed(1)} ms`;
+        if (timingMBIR && res.mbir_time) timingMBIR.textContent = `${res.mbir_time.toFixed(1)} ms`;
+        if (timingDLR && res.dlr_time) timingDLR.textContent = `${res.dlr_time.toFixed(1)} ms`;
+        if (timingGEN && res.gen_time) timingGEN.textContent = `${res.gen_time.toFixed(1)} ms`;
+
+    } catch (e) {
+        console.error("Failed to prepare evaluation comparative reconstructions:", e);
+    }
+}
+
+async function runEvaluationBenchmark(progressBar, statusText, runButton, controller) {
+    const signal = controller.signal;
+    const pIdx = document.getElementById('patient-slider').value;
+    const pId = currentPatientIds[pIdx];
+    const sIdx = document.getElementById('slice-slider').value;
+    const numSources = parseInt(document.getElementById('sim-geometry-select').value);
+    const exposureMas = parseFloat(document.getElementById('sim-exposure-select').value);
+
+    const scope = document.querySelector('input[name="eval-scope"]:checked')?.value || 'single_patient';
+    const numPatients = document.getElementById('eval-num-patients-slider').value;
+
+    // Pull each reconstruction method's settings from its own stage controls so the
+    // benchmark runs every algorithm exactly as the user configured it elsewhere.
+    const numVal = (id, dflt) => { const el = document.getElementById(id); return el ? parseFloat(el.value) : dflt; };
+    const radioVal = (name, dflt) => { const el = document.querySelector(`input[name="${name}"]:checked`); return el ? el.value : dflt; };
+
+    // FlashFBP filter gains (sliders are 0-100 %)
+    const wLow = numVal('fbp-low-slider', 100) / 100.0;
+    const wMid = numVal('fbp-mid-slider', 100) / 100.0;
+    const wHigh = numVal('fbp-high-slider', 100) / 100.0;
+
+    // FidelityMBIR (TV and LR sliders are log10)
+    const iters = numVal('iter-count-slider', 30);
+    const tv = Math.pow(10, numVal('tv-strength-slider', 4.0));
+    const lr = Math.pow(10, numVal('lr-slider', -1));
+    const precond = document.getElementById('use-precond-check')?.checked ?? true;
+
+    // GenerativeVision (sigma sliders are log10 HU std -> attenuation units, scaleOnly)
+    const genSteps = numVal('diffusion-steps-slider', 10);
+    const genLangevin = numVal('langevin-steps-slider', 0);
+    const genSigmaMax = HU_to_atten(Math.pow(10, numVal('sigma-max-slider', 3)), true);
+    const genSigmaMin = HU_to_atten(Math.pow(10, numVal('sigma-min-slider', 0)), true);
+    const genSolver = radioVal('diffusion-solver', 'heun');
+    const genTemperature = numVal('diffusion-temperature-slider', 0);
+    const genNumSamples = numVal('num-samples-slider', 1);
+    const genModelVariant = radioVal('diffusion-model-variant', 'base');
+
+    const boxGT = document.getElementById('eval-box-gt');
+    const boxFBP = document.getElementById('eval-box-fbp');
+    const boxMBIR = document.getElementById('eval-box-mbir');
+    const boxDLR = document.getElementById('eval-box-dlr');
+    const boxGEN = document.getElementById('eval-box-gen');
+
+    const updateImageView = (container, src) => {
+        if (!container) return;
+        container.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = src;
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'contain';
+        img.style.backgroundColor = 'black';
+        container.appendChild(img);
+    };
+
+    try {
+        statusText.textContent = 'Connecting to evaluation stream...';
+        progressBar.style.width = '5%';
+
+        const streamUrl = `/api/evaluation/run?scope=${scope}&num_patients=${numPatients}&dataset_id=${selectedDataset}&patient_id=${pId}&slice_index=${sIdx}&n_source=${numSources}&exposure_mas=${exposureMas}&ww=${windowWidth}&wl=${windowLevel}`
+            + `&w_low=${wLow}&w_mid=${wMid}&w_high=${wHigh}`
+            + `&iters=${iters}&tv=${tv}&lr=${lr}&precond=${precond}`
+            + `&steps=${genSteps}&langevin_steps=${genLangevin}&sigma_max=${genSigmaMax}&sigma_min=${genSigmaMin}`
+            + `&solver=${genSolver}&temperature=${genTemperature}&num_samples=${genNumSamples}&model_variant=${genModelVariant}`;
+        const response = await fetch(streamUrl, { signal });
+        if (!response.ok || !response.body) {
+            throw new Error(`Evaluation stream failed with HTTP ${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        let chunkRemainder = '';
+
+        while (true) {
+            let result;
+            try {
+                result = await reader.read();
+            } catch (e) {
+                console.warn("Evaluation stream read interrupted", e);
+                break;
+            }
+            const { value, done } = result;
+            if (done) break;
+            
+            const chunk = chunkRemainder + decoder.decode(value);
+            const lines = chunk.split('\n');
+            chunkRemainder = lines.pop();
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.substring(6));
+                        if (data.error) {
+                            throw new Error(data.error);
+                        }
+
+                        // 1. Update progress & status
+                        const progress = (data.index / data.total) * 100;
+                        progressBar.style.width = `${progress}%`;
+                        statusText.textContent = `Benchmarking: Patient ${data.patient_id} (${data.index}/${data.total}) completed`;
+
+                        // 2. Update the per-method 2x2 metric violin panels (cumulative across samples)
+                        if (data.plots) {
+                            const setPlot = (id, b64) => {
+                                if (!b64) return;
+                                const im = document.getElementById(id);
+                                if (im) im.src = `data:image/png;base64,${b64}`;
+                            };
+                            setPlot('eval-plot-fbp', data.plots.fbp);
+                            setPlot('eval-plot-mbir', data.plots.mbir);
+                            setPlot('eval-plot-dlr', data.plots.dlr);
+                            setPlot('eval-plot-gen', data.plots.gen);
+                        }
+
+                        // 3. Update reconstructions live for every sampled patient
+                        if (data.reconstructions) {
+                            const r = data.reconstructions;
+                            if (r.gt && boxGT) updateImageView(boxGT, `data:image/png;base64,${r.gt}`);
+                            if (r.fbp && boxFBP) updateImageView(boxFBP, `data:image/png;base64,${r.fbp}`);
+                            if (r.mbir && boxMBIR) updateImageView(boxMBIR, `data:image/png;base64,${r.mbir}`);
+                            if (r.dlr && boxDLR) updateImageView(boxDLR, `data:image/png;base64,${r.dlr}`);
+                            if (r.gen && boxGEN) updateImageView(boxGEN, `data:image/png;base64,${r.gen}`);
+                        }
+                    } catch (e) {
+                        console.error("JSON Parse error in evaluation stream", e);
+                    }
+                }
+            }
+        }
+
+        if (!signal.aborted) {
+            statusText.textContent = 'Benchmark evaluation complete';
+            progressBar.style.width = '100%';
+        }
+    } catch (e) {
+        if (isAbortError(e)) {
+            statusText.textContent = 'Benchmark Stopped';
+            return;
+        }
+        console.error(e);
+        statusText.textContent = `Benchmark evaluation failed: ${e.message || 'Network Error'}`;
+    } finally {
+        finishStageRun('evaluation', controller);
+        if (runButton) runButton.disabled = false;
     }
 }
 
@@ -1029,11 +1400,19 @@ async function runEigenFBPRecon(progressBar, statusText, nextButton, controller)
         statusText.textContent = 'Preparing unfiltered backprojection once...';
         progressBar.style.width = '25%';
 
-        const resp = await fetch(`/api/reconstruct/runtime/${selectedDataset}/${pId}/${sIdx}/${numSources}?initial_step=unfiltered&final_step=filter&ww=${windowWidth}&wl=${windowLevel}`, { signal });
+        const sliderLow = document.getElementById('fbp-low-slider');
+        const sliderMid = document.getElementById('fbp-mid-slider');
+        const sliderHigh = document.getElementById('fbp-high-slider');
+
+        const wLow = sliderLow ? parseFloat(sliderLow.value) / 100.0 : 1.0;
+        const wMid = sliderMid ? parseFloat(sliderMid.value) / 100.0 : 0.5;
+        const wHigh = sliderHigh ? parseFloat(sliderHigh.value) / 100.0 : 0.2;
+
+        const resp = await fetch(`/api/reconstruct/runtime/${selectedDataset}/${pId}/${sIdx}/${numSources}?initial_step=unfiltered&final_step=filter&ww=${windowWidth}&wl=${windowLevel}&w_low=${wLow}&w_mid=${wMid}&w_high=${wHigh}`, { signal });
         const res = await resp.json();
 
         if (res.error) {
-            statusText.textContent = `EigenFBP Failed: ${res.error}`;
+            statusText.textContent = `FlashFBP Failed: ${res.error}`;
             return;
         }
 
@@ -1050,10 +1429,11 @@ async function runEigenFBPRecon(progressBar, statusText, nextButton, controller)
             updateImageView(boxFiltered, res.final_image);
             timingFiltered.textContent = `${res.final_time_ms.toFixed(1)} ms`;
             progressBar.style.width = '100%';
-            statusText.textContent = '4096-mode Sparse Eigen FBP complete';
+            statusText.textContent = '4096-mode Sparse Eigen FlashFBP complete';
             if (nextButton) nextButton.disabled = false;
+            isFbpRunComplete = true;
         } else {
-            statusText.textContent = 'EigenFBP final recon missing';
+            statusText.textContent = 'FlashFBP final recon missing';
         }
     } catch (e) {
         if (isAbortError(e)) {
@@ -1094,6 +1474,21 @@ async function runNeuralSpeedRecon(progressBar, statusText, nextButton, controll
     };
 
     try {
+        // Run FBP initialization first if it hasn't been run
+        if (!isFbpRunComplete) {
+            statusText.textContent = "FBP initialization required. Running FBP first...";
+            try {
+                await runEigenFBPRecon(
+                    document.querySelector('[data-progress-fill="eigen-fbp-recon"]'),
+                    document.querySelector('[data-progress-status="eigen-fbp-recon"]'),
+                    document.querySelector('[data-next-stage="eigen-fbp-recon"]'),
+                    createStageRun('eigen-fbp-recon')
+                );
+            } catch (fbpError) {
+                console.error("FBP pre-run failed of NeuralSpark:", fbpError);
+            }
+        }
+
         if (boxInit) boxInit.innerHTML = '';
         if (boxFinal) boxFinal.innerHTML = '';
         if (timingInit) timingInit.textContent = '-- ms';
@@ -1106,7 +1501,7 @@ async function runNeuralSpeedRecon(progressBar, statusText, nextButton, controll
         const res = await resp.json();
 
         if (res.error) {
-            statusText.textContent = `NeuralSpeed Failed: ${res.error}`;
+            statusText.textContent = `NeuralSpark Failed: ${res.error}`;
             return;
         }
 
@@ -1115,7 +1510,7 @@ async function runNeuralSpeedRecon(progressBar, statusText, nextButton, controll
             timingInit.textContent = `${res.initial_time_ms.toFixed(1)} ms`;
         }
 
-        statusText.textContent = 'Applying NeuralSpeed restoration step...';
+        statusText.textContent = 'Applying NeuralSpark restoration step...';
         progressBar.style.width = '70%';
         await sleep(500, signal);
 
@@ -1123,10 +1518,10 @@ async function runNeuralSpeedRecon(progressBar, statusText, nextButton, controll
             updateImageView(boxFinal, res.final_image);
             timingFinal.textContent = `${res.final_time_ms.toFixed(1)} ms`;
             progressBar.style.width = '100%';
-            statusText.textContent = 'NeuralSpeed reconstruction complete';
+            statusText.textContent = 'NeuralSpark reconstruction complete';
             if (nextButton) nextButton.disabled = false;
         } else {
-            statusText.textContent = 'NeuralSpeed final recon missing';
+            statusText.textContent = 'NeuralSpark final recon missing';
         }
     } catch (e) {
         if (isAbortError(e)) {
@@ -1134,7 +1529,7 @@ async function runNeuralSpeedRecon(progressBar, statusText, nextButton, controll
             return;
         }
         console.error(e);
-        statusText.textContent = 'Network Error during NeuralSpeed reconstruction';
+        statusText.textContent = 'Network Error during NeuralSpark reconstruction';
     } finally {
         finishStageRun('deep-learning-recon', controller);
         updateWorkflowUI();
@@ -1160,6 +1555,7 @@ async function runGenerativeVisionRecon(progressBar, statusText, nextButton, con
     const sigmaMin = HU_to_atten(sigmaMinHU, true);
 
     const solver = document.querySelector('input[name="diffusion-solver"]:checked')?.value || 'heun';
+    const modelVariant = document.querySelector('input[name="diffusion-model-variant"]:checked')?.value || 'base';
 
     const numSamples = parseInt(document.getElementById('num-samples-slider')?.value || '4');
     const langevinSteps = parseInt(document.getElementById('langevin-steps-slider')?.value || '100');
@@ -1170,11 +1566,11 @@ async function runGenerativeVisionRecon(progressBar, statusText, nextButton, con
         const jobId = buildGenerativeJobId();
         stageRunState['generative-ai-recon'].jobId = jobId;
 
-        console.log(`DEBUG [Generative]: Starting combined sampling with JobID: ${jobId}, steps=${steps}, numSamples=${numSamples}, langevinSteps=${langevinSteps}`);
+        console.log(`DEBUG [Generative]: Starting combined sampling with JobID: ${jobId}, steps=${steps}, numSamples=${numSamples}, langevinSteps=${langevinSteps}, variant=${modelVariant}`);
         statusText.textContent = `Starting GenerativeVision Diffusion (${steps} steps)...`;
         progressBar.style.width = '10%';
 
-        const streamUrl = `/api/reconstruct/generative/${selectedDataset}/${pId}/${sIdx}/${numSources}?steps=${steps}&sigma_max=${sigmaMax}&sigma_min=${sigmaMin}&solver=${solver}&temperature=${temperature}&exposure_mas=${exposureMas}&ww=${windowWidth}&wl=${windowLevel}&job_id=${jobId}&num_samples=${numSamples}&langevin_steps=${langevinSteps}`;
+        const streamUrl = `/api/reconstruct/generative/${selectedDataset}/${pId}/${sIdx}/${numSources}?steps=${steps}&sigma_max=${sigmaMax}&sigma_min=${sigmaMin}&solver=${solver}&temperature=${temperature}&exposure_mas=${exposureMas}&ww=${windowWidth}&wl=${windowLevel}&job_id=${jobId}&num_samples=${numSamples}&langevin_steps=${langevinSteps}&model_variant=${modelVariant}`;
         const response = await fetch(streamUrl, { signal });
         if (!response.ok || !response.body) {
             throw new Error(`Generative stream failed with HTTP ${response.status}`);
@@ -1282,6 +1678,133 @@ window.addEventListener("DOMContentLoaded", () => {
         if (sliderDebounce) clearTimeout(sliderDebounce);
         sliderDebounce = setTimeout(() => updateLiveFrame(), SLIDER_SLEEP);
     });
+
+    // --- STAGE 3: EIGEN-FBP FILTER LISTENERS ---
+    const fbpLowSlider = document.getElementById('fbp-low-slider');
+    const fbpMidSlider = document.getElementById('fbp-mid-slider');
+    const fbpHighSlider = document.getElementById('fbp-high-slider');
+
+    const updateFbpSliderDisplays = () => {
+        if (fbpLowSlider) {
+            const disp = document.getElementById('fbp-low-display');
+            if (disp) disp.textContent = `${fbpLowSlider.value}%`;
+        }
+        if (fbpMidSlider) {
+            const disp = document.getElementById('fbp-mid-display');
+            if (disp) disp.textContent = `${fbpMidSlider.value}%`;
+        }
+        if (fbpHighSlider) {
+            const disp = document.getElementById('fbp-high-display');
+            if (disp) disp.textContent = `${fbpHighSlider.value}%`;
+        }
+    };
+
+    if (fbpLowSlider) {
+        fbpLowSlider.addEventListener('input', (e) => {
+            const disp = document.getElementById('fbp-low-display');
+            if (disp) disp.textContent = `${e.target.value}%`;
+            document.querySelectorAll('[id^="preset-"]').forEach(btn => {
+                btn.classList.remove('active');
+                btn.style.backgroundColor = '';
+                btn.style.color = '';
+            });
+            if (sliderDebounce) clearTimeout(sliderDebounce);
+            sliderDebounce = setTimeout(() => {
+                updateFilterPlot();
+                if (workflowState === 'SIMULATED') {
+                    updateFbpReconstruction();
+                }
+            }, SLIDER_SLEEP);
+        });
+    }
+    if (fbpMidSlider) {
+        fbpMidSlider.addEventListener('input', (e) => {
+            const disp = document.getElementById('fbp-mid-display');
+            if (disp) disp.textContent = `${e.target.value}%`;
+            document.querySelectorAll('[id^="preset-"]').forEach(btn => {
+                btn.classList.remove('active');
+                btn.style.backgroundColor = '';
+                btn.style.color = '';
+            });
+            if (sliderDebounce) clearTimeout(sliderDebounce);
+            sliderDebounce = setTimeout(() => {
+                updateFilterPlot();
+                if (workflowState === 'SIMULATED') {
+                    updateFbpReconstruction();
+                }
+            }, SLIDER_SLEEP);
+        });
+    }
+    if (fbpHighSlider) {
+        fbpHighSlider.addEventListener('input', (e) => {
+            const disp = document.getElementById('fbp-high-display');
+            if (disp) disp.textContent = `${e.target.value}%`;
+            document.querySelectorAll('[id^="preset-"]').forEach(btn => {
+                btn.classList.remove('active');
+                btn.style.backgroundColor = '';
+                btn.style.color = '';
+            });
+            if (sliderDebounce) clearTimeout(sliderDebounce);
+            sliderDebounce = setTimeout(() => {
+                updateFilterPlot();
+                if (workflowState === 'SIMULATED') {
+                    updateFbpReconstruction();
+                }
+            }, SLIDER_SLEEP);
+        });
+    }
+
+    const setFbpSliders = (low, mid, high) => {
+        if (fbpLowSlider) fbpLowSlider.value = low;
+        if (fbpMidSlider) fbpMidSlider.value = mid;
+        if (fbpHighSlider) fbpHighSlider.value = high;
+        updateFbpSliderDisplays();
+        updateFilterPlot();
+        if (workflowState === 'SIMULATED') {
+            updateFbpReconstruction();
+        }
+    };
+
+    const sharpBtn = document.getElementById('preset-sharp-btn');
+    const rampBtn = document.getElementById('preset-ramp-btn');
+    const softBtn = document.getElementById('preset-soft-btn');
+
+    const setActivePreset = (btnId) => {
+        document.querySelectorAll('[id^="preset-"]').forEach(btn => {
+            btn.classList.remove('active');
+            btn.style.backgroundColor = '';
+            btn.style.color = '';
+        });
+        const activeBtn = document.getElementById(btnId);
+        if (activeBtn) {
+            activeBtn.classList.add('active');
+            activeBtn.style.backgroundColor = '#0a63a8';
+            activeBtn.style.color = 'white';
+        }
+    };
+
+    if (sharpBtn) {
+        sharpBtn.addEventListener('click', () => {
+            setFbpSliders(100, 80, 50);
+            setActivePreset('preset-sharp-btn');
+        });
+    }
+    if (rampBtn) {
+        rampBtn.addEventListener('click', () => {
+            setFbpSliders(100, 100, 100);
+            setActivePreset('preset-ramp-btn');
+        });
+    }
+    if (softBtn) {
+        softBtn.addEventListener('click', () => {
+            setFbpSliders(100, 30, 5);
+            setActivePreset('preset-soft-btn');
+        });
+    }
+
+    // Initialize FBP displays & chart
+    updateFbpSliderDisplays();
+    updateFilterPlot();
 
     // --- STAGE 6: GENERATIVE VISION LISTENERS ---
     const genStepsSlider = document.getElementById('diffusion-steps-slider');
@@ -1442,6 +1965,46 @@ window.addEventListener("DOMContentLoaded", () => {
         }
     });
 
+    // --- STAGE 7: EVALUATION TAB LISTENERS ---
+    const evalScopeRadios = document.querySelectorAll('input[name="eval-scope"]');
+    const evalPatientsRow = document.getElementById('eval-num-patients-row');
+    const evalSlider = document.getElementById('eval-num-patients-slider');
+    const evalDisplay = document.getElementById('eval-num-patients-display');
+    const btnRunEval = document.getElementById('btn-run-evaluation');
+
+    if (evalScopeRadios) {
+        evalScopeRadios.forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (radio.value === 'single_patient') {
+                    if (evalPatientsRow) evalPatientsRow.style.display = 'none';
+                } else {
+                    if (evalPatientsRow) evalPatientsRow.style.display = 'grid';
+                }
+            });
+        });
+    }
+
+    if (evalSlider && evalDisplay) {
+        evalSlider.addEventListener('input', (e) => {
+            evalDisplay.textContent = e.target.value;
+        });
+    }
+
+    if (btnRunEval) {
+        btnRunEval.addEventListener('click', () => {
+            const fill = document.querySelector('[data-progress-fill="evaluation"]');
+            const status = document.querySelector('[data-progress-status="evaluation"]');
+            
+            const controller = createStageRun('evaluation');
+            btnRunEval.disabled = true;
+            runEvaluationBenchmark(fill, status, btnRunEval, controller);
+        });
+    }
+
+    // --- MOTIONSCOPE TAB LISTENERS ---
+    document.querySelectorAll('input[name="motion-views"], input[name="motion-clock"], input[name="motion-method"]')
+        .forEach(radio => radio.addEventListener('change', updateMotionScopeGifs));
+
     handleStageNavigation();
     handleSimulationRuns();
     initDatasetPreviews();
@@ -1480,8 +2043,23 @@ async function runIterativeRecon(progressBar, statusText, nextButton, controller
     };
 
     try {
+        // 1. Run FBP initialization first if it hasn't been run
+        if (!isFbpRunComplete) {
+            statusText.textContent = "FBP initialization required. Running FBP first...";
+            try {
+                await runEigenFBPRecon(
+                    document.querySelector('[data-progress-fill="eigen-fbp-recon"]'),
+                    document.querySelector('[data-progress-status="eigen-fbp-recon"]'),
+                    document.querySelector('[data-next-stage="eigen-fbp-recon"]'),
+                    createStageRun('eigen-fbp-recon')
+                );
+            } catch (fbpError) {
+                console.error("FBP pre-run failed of MBIR:", fbpError);
+            }
+        }
+
         // 2. Start Streaming Iterative Recon
-        statusText.textContent = `Starting HighFidelityMBIR (TV=${tv < 1e-5 ? "0" : tv.toFixed(5)})...`;
+        statusText.textContent = `Starting FidelityMBIR (TV=${tv < 1e-5 ? "0" : tv.toFixed(5)})...`;
         progressBar.style.width = '20%';
 
         const jobId = buildIterativeJobId();
@@ -1521,7 +2099,7 @@ async function runIterativeRecon(progressBar, statusText, nextButton, controller
                             }
                             const progress = 20 + (data.iteration / data.total) * 80;
                             progressBar.style.width = `${progress}%`;
-                            statusText.textContent = `HighFidelityMBIR: Iteration ${data.iteration} / ${data.total}`;
+                            statusText.textContent = `FidelityMBIR: Iteration ${data.iteration} / ${data.total}`;
                         }
                     } catch (e) {
                         console.warn("Error parsing SSE chunk", e);
@@ -1531,18 +2109,18 @@ async function runIterativeRecon(progressBar, statusText, nextButton, controller
         }
 
         if (!signal.aborted) {
-            statusText.textContent = "HighFidelityMBIR Complete";
+            statusText.textContent = "FidelityMBIR Complete";
             progressBar.style.width = '100%';
             if (nextButton) nextButton.disabled = false;
         }
 
     } catch (e) {
         if (isAbortError(e)) {
-            resetIterativeStage('HighFidelityMBIR Stopped');
+            resetIterativeStage('FidelityMBIR Stopped');
             return;
         }
         console.error(e);
-        statusText.textContent = "HighFidelityMBIR Failed";
+        statusText.textContent = "FidelityMBIR Failed";
     } finally {
         finishStageRun('model-based-iterative-recon', controller);
         updateWorkflowUI();

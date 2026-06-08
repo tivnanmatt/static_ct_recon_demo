@@ -83,6 +83,36 @@ class DiffusionTrainingConfig:
     sigma_min: float = SIGMA_MIN
     sigma_max: float = SIGMA_MAX
 
+def maybe_load_diffusion_checkpoint(
+    dataset_id: str,
+    n_source: int,
+    model: nn.Module,
+    optimizer: AdamW,
+    scheduler: LambdaLR,
+    device: torch.device,
+) -> Tuple[int, float]:
+    checkpoint_path = get_model_dir(dataset_id, n_source) / f"diffusion_{n_source}.pt"
+    if not checkpoint_path.exists():
+        return 1, float("inf")
+    
+    print(f"[setup-diffusion] loading checkpoint from {checkpoint_path}", flush=True)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    model.load_state_dict(checkpoint["model_state"])
+    if "optimizer_state" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+    
+    scheduler_state = checkpoint.get("scheduler_state")
+    if scheduler_state is not None:
+        scheduler.load_state_dict(scheduler_state)
+        
+    start_epoch = int(checkpoint.get("epoch", 0)) + 1
+    metrics = checkpoint.get("metrics", {})
+    # For safety, handle both val_loss and other possible loss entries
+    best_val = float(metrics.get("val_loss", metrics.get("val_weighted_mse", float("inf"))))
+    print(f"[setup-diffusion] resumed from epoch={start_epoch-1} and best_val={best_val:.6e}", flush=True)
+    return start_epoch, best_val
+
 def save_diffusion_checkpoint(
     dataset_id: str,
     n_source: int,
@@ -300,7 +330,7 @@ def main():
             learning_rate=args.learning_rate,
             weight_decay=1e-5,
             checkpoint_every=5,
-            exposures_mas=(1.0, 10.0, 100.0),
+            exposures_mas=(0.1, 1.0, 10.0, 100.0),
             val_fraction=0.1,
             seed=42,
             base_channels=args.base_channels, # Bigger model for diffusion
@@ -327,9 +357,16 @@ def main():
         rng_val = random.Random(config.seed + 2)
 
         checkpoint_name = f"diffusion_{n_source}.pt"
-        best_val = float('inf')
+        start_epoch, best_val = maybe_load_diffusion_checkpoint(
+            config.dataset_id,
+            config.n_source,
+            model,
+            optimizer,
+            scheduler,
+            device=device,
+        )
 
-        for epoch in range(1, config.epochs + 1):
+        for epoch in range(start_epoch, start_epoch + config.epochs):
             train_results = train_diffusion_epoch(model, optimizer, scheduler, sampler, builder, config, "train", epoch, rng_train)
             with torch.no_grad():
                 val_results = train_diffusion_epoch(model, optimizer, None, sampler, builder, config, "val", epoch, rng_val)
