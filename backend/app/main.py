@@ -210,7 +210,7 @@ def encode_colormap_png(img: np.ndarray, vmin: float, vmax: float, cmap: str = '
 def compute_hallucination_map_b64(x0_tensor, fov_mask=None) -> str:
     """Per-pixel log-variance ('hallucination') map across the sample dimension of
     x0 ([M,1,H,W]). The colormap is autoscaled to the 10th-90th percentile of the
-    in-FOV log-variance (inferno)."""
+    in-FOV log-variance, 1st-99th percentile (inferno)."""
     arr = x0_tensor.detach().cpu().numpy().astype(np.float64)
     if arr.ndim == 4:
         arr = arr[:, 0]  # [M, H, W]
@@ -225,8 +225,8 @@ def compute_hallucination_map_b64(x0_tensor, fov_mask=None) -> str:
     vals = log_var[fov]
     if vals.size == 0:
         vals = log_var.ravel()
-    vmin = float(np.percentile(vals, 10))
-    vmax = float(np.percentile(vals, 90))
+    vmin = float(np.percentile(vals, 1))
+    vmax = float(np.percentile(vals, 99))
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         vmin = float(np.min(log_var))
         vmax = float(np.max(log_var)) + 1e-6

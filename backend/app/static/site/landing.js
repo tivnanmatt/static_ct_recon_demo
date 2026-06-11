@@ -143,7 +143,9 @@ setInterval(() => {
         const M = (lastStreamData.x0_list && lastStreamData.x0_list.length) || 1;
         if (M > 1) {
             animationCycleIdx = (animationCycleIdx + 1) % M;
-            if (currentDisplayMode === 'animation') {
+            // The generative-process image (xt) animates over batch samples in animation,
+            // mean, and hallucination modes.
+            if (currentDisplayMode === 'animation' || currentDisplayMode === 'mean' || currentDisplayMode === 'hallucination') {
                 updateDisplay();
             }
         }
@@ -180,7 +182,10 @@ function updateDisplay() {
 
     if (currentDisplayMode === 'hallucination') {
         // Hallucination map: log-variance across the posterior samples (needs N > 1).
-        if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
+        // The generative-process image (xt) cycles through the batch samples.
+        const idx = animationCycleIdx % M;
+        const xtImg = (lastStreamData.xt_list && lastStreamData.xt_list[idx]) || lastStreamData.xt;
+        if (xtImg) globalUpdateImageView(boxXt, xtImg);
         if (M > 1 && lastStreamData.hallucination_map) {
             globalUpdateImageView(boxX0, lastStreamData.hallucination_map);
         } else if (boxX0) {
@@ -199,10 +204,12 @@ function updateDisplay() {
         if (xtImg) globalUpdateImageView(boxXt, xtImg);
         if (x0Img) globalUpdateImageView(boxX0, x0Img);
     } else if (currentDisplayMode === 'mean') {
-        // Option C: Generative Mean Mode
-        if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
+        // Option C: Generative Mean Mode — the generative-process image (xt) cycles
+        // through the batch samples; the reconstruction shows the posterior mean.
+        const idx = animationCycleIdx % M;
+        const xtImg = (lastStreamData.xt_list && lastStreamData.xt_list[idx]) || lastStreamData.xt;
+        if (xtImg) globalUpdateImageView(boxXt, xtImg);
 
-        // Reconstruction should show the mean_x0 (which is the average posterior mean)
         const meanX0Img = lastStreamData.mean_x0 || lastStreamData.x0;
         if (meanX0Img) globalUpdateImageView(boxX0, meanX0Img);
     }
