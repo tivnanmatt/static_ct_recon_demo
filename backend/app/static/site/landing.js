@@ -178,7 +178,15 @@ function updateDisplay() {
 
     const M = (lastStreamData.x0_list && lastStreamData.x0_list.length) || 1;
 
-    if (M <= 1 || currentDisplayMode === 'sample') {
+    if (currentDisplayMode === 'hallucination') {
+        // Hallucination map: log-variance across the posterior samples (needs N > 1).
+        if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
+        if (M > 1 && lastStreamData.hallucination_map) {
+            globalUpdateImageView(boxX0, lastStreamData.hallucination_map);
+        } else if (boxX0) {
+            boxX0.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:0.8rem;text-align:center;padding:8px;">Hallucination Map needs more than 1 sample (set Num Samples &gt; 1)</div>';
+        }
+    } else if (M <= 1 || currentDisplayMode === 'sample') {
         // Option A: Single Sample Mode (Sample 0)
         if (lastStreamData.xt) globalUpdateImageView(boxXt, lastStreamData.xt);
         if (lastStreamData.x0) globalUpdateImageView(boxX0, lastStreamData.x0);
@@ -1677,6 +1685,32 @@ window.addEventListener("DOMContentLoaded", () => {
         document.getElementById('wl-display').textContent = windowLevel;
         if (sliderDebounce) clearTimeout(sliderDebounce);
         sliderDebounce = setTimeout(() => updateLiveFrame(), SLIDER_SLEEP);
+    });
+
+    // --- Window/Level presets (Load Patient) ---
+    document.querySelectorAll('[id^="wlpreset-"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const ww = parseInt(btn.getAttribute('data-ww'));
+            const wl = parseInt(btn.getAttribute('data-wl'));
+            windowWidth = ww;
+            windowLevel = wl;
+            const wwS = document.getElementById('window-width-slider');
+            const wlS = document.getElementById('window-level-slider');
+            if (wwS) wwS.value = ww;
+            if (wlS) wlS.value = wl;
+            document.getElementById('ww-display').textContent = ww;
+            document.getElementById('wl-display').textContent = wl;
+            // Highlight the active preset (same behavior as the FlashFBP presets).
+            document.querySelectorAll('[id^="wlpreset-"]').forEach((b) => {
+                b.classList.remove('active');
+                b.style.backgroundColor = '';
+                b.style.color = '';
+            });
+            btn.classList.add('active');
+            btn.style.backgroundColor = '#0a63a8';
+            btn.style.color = 'white';
+            updateLiveFrame();
+        });
     });
 
     // --- STAGE 3: EIGEN-FBP FILTER LISTENERS ---

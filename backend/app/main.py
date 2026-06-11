@@ -193,6 +193,47 @@ def encode_hu_png(hu_img: np.ndarray, win_min: float, win_max: float, figsize=(4
     fig.savefig(buf, format='png', facecolor='black', dpi=dpi)
     return buf.getvalue()
 
+
+def encode_colormap_png(img: np.ndarray, vmin: float, vmax: float, cmap: str = 'inferno', figsize=(4, 4), dpi: int = 100) -> bytes:
+    """Encode a 2D array as a colormapped PNG (same layout as encode_hu_png)."""
+    from matplotlib.figure import Figure
+
+    buf = io.BytesIO()
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor='black')
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.imshow(img, cmap=cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
+    ax.axis('off')
+    fig.savefig(buf, format='png', facecolor='black', dpi=dpi)
+    return buf.getvalue()
+
+
+def compute_hallucination_map_b64(x0_tensor, fov_mask=None) -> str:
+    """Per-pixel log-variance ('hallucination') map across the sample dimension of
+    x0 ([M,1,H,W]). The colormap is autoscaled to the 10th-90th percentile of the
+    in-FOV log-variance (inferno)."""
+    arr = x0_tensor.detach().cpu().numpy().astype(np.float64)
+    if arr.ndim == 4:
+        arr = arr[:, 0]  # [M, H, W]
+    # Variance across samples in HU^2 (the constant HU offset cancels under variance).
+    hu_scale = 1000.0 / MU_WATER_60KEV
+    var = np.var(arr, axis=0) * (hu_scale ** 2)
+    log_var = np.log(var + 1e-6)
+    if fov_mask is not None:
+        fov = fov_mask.detach().cpu().numpy() > 0.5
+    else:
+        fov = np.ones(log_var.shape, dtype=bool)
+    vals = log_var[fov]
+    if vals.size == 0:
+        vals = log_var.ravel()
+    vmin = float(np.percentile(vals, 10))
+    vmax = float(np.percentile(vals, 90))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin = float(np.min(log_var))
+        vmax = float(np.max(log_var)) + 1e-6
+    display = np.where(fov, log_var, vmin)  # outside the FOV -> floor (dark)
+    return base64.b64encode(encode_colormap_png(display, vmin, vmax, cmap='inferno')).decode('utf-8')
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "message": "Backend is running"}
@@ -808,21 +849,17 @@ async def reconstruct_generative(
             measurement_null_batched = measurement_null.repeat(M, 1, 1, 1)
             full_fbp_batched = full_fbp.repeat(M, 1, 1, 1)
 
-            # Anchor the generative process on the sharpened FBP's range component
-            # (project_signal(full_fbp)) instead of the raw pseudoinverse pinv, so the forward
-            # process is the displayed FBP + null-space noise and the reconstruction
-            # (range_anchor + null_hat) does not inherit the pinv ringing. Inference-only.
-            fbp_signal_batched = full_fbp_batched - builder.project_batch_null(full_fbp_batched)
+            # Initialise the diffusion state from the measured null-space FBP plus sigma_max
+            # null-space noise, exactly as the forward process in prep_diffusion_train.py
+            # (xt_full = pinv + xt_null). The range anchor is the pseudoinverse (channel 0 = pinv),
+            # matching how the new-input-style model was trained (range stays unfiltered).
             noise_null = builder.project_batch_null(torch.randn_like(pinv_batched)) * sigma_max
             xt_null_start = builder.project_batch_null(measurement_null_batched + noise_null)
-            xt_start = fbp_signal_batched + xt_null_start
+            xt_start = pinv_batched + xt_null_start
 
             # BUILD INPUT STACK FOR SOLVER
             # Channels: [pinv, meas_null, full_fbp, null_xt, total_xt, coord_x, coord_y]
-            # Channel 0 is re-anchored from pinv to the sharpened FBP range so the solver's
-            # reconstruction (inputs[:,0:1] + null_hat) uses the sharpened FBP.
             inputs = builder.build_input_channels(comps).unsqueeze(0).repeat(M, 1, 1, 1)
-            inputs[:, 0:1, ...] = fbp_signal_batched
             inputs[:, 3:4, ...] = xt_null_start
             inputs[:, 4:5, ...] = xt_start
 
@@ -895,6 +932,9 @@ async def reconstruct_generative(
                     null_b64 = null_hat_list[0]
                     xt_b64 = xt_list[0]
                     x0_b64 = x0_list[0]
+
+                    # Hallucination map: log-variance across the M posterior samples.
+                    hallucination_b64 = "data:image/png;base64," + compute_hallucination_map_b64(update["x0"], builder.fov_mask)
                 else:
                     null_hat_list = None
                     xt_list = None
@@ -902,6 +942,7 @@ async def reconstruct_generative(
                     mean_null_hat_b64 = None
                     mean_xt_b64 = None
                     mean_x0_b64 = None
+                    hallucination_b64 = None  # needs >1 sample
                     null_b64 = "data:image/png;base64," + component_to_b64_index(update["null_hat"], 0)
                     xt_b64 = "data:image/png;base64," + to_b64_index(update["xt"], 0)
                     x0_b64 = "data:image/png;base64," + to_b64_index(update["x0"], 0)
@@ -919,6 +960,7 @@ async def reconstruct_generative(
                     'null_hat_list': null_hat_list,
                     'xt_list': xt_list,
                     'x0_list': x0_list,
+                    'hallucination_map': hallucination_b64,
                     'mean_null_hat': mean_null_hat_b64,
                     'mean_xt': mean_xt_b64,
                     'mean_x0': mean_x0_b64
@@ -1290,17 +1332,13 @@ async def run_evaluation_benchmark(
                 M = max(1, int(num_samples))
                 pinv_t = measurement_components["pinv"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
                 measurement_null_t = measurement_components["measurement_null"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
-                full_fbp_t = measurement_components["full_fbp"].unsqueeze(0).unsqueeze(0).repeat(M, 1, 1, 1)
-                # Anchor the generative process on the sharpened FBP's range component
-                # (project_signal(full_fbp)) instead of the raw pseudoinverse pinv, so the
-                # forward process is the displayed FBP + null-space noise and the reconstruction
-                # (range_anchor + null_hat) does not inherit the pinv ringing. Inference-only.
-                fbp_signal_t = full_fbp_t - builder_gen.project_batch_null(full_fbp_t)
+                # Init xt_full = pinv + xt_null at sigma_max, matching prep_diffusion_train.py.
+                # Range anchor stays the pseudoinverse (channel 0 = pinv), as the new-input-style
+                # model was trained.
                 noise_null = builder_gen.project_batch_null(torch.randn_like(pinv_t)) * gen_sigma_max
                 xt_null_start = builder_gen.project_batch_null(measurement_null_t + noise_null)
-                xt_start = fbp_signal_t + xt_null_start
+                xt_start = pinv_t + xt_null_start
                 inputs = builder_gen.build_input_channels(measurement_components).unsqueeze(0).repeat(M, 1, 1, 1)
-                inputs[:, 0:1, ...] = fbp_signal_t
                 inputs[:, 3:4, ...] = xt_null_start
                 inputs[:, 4:5, ...] = xt_start
                 gen_iter = solve_combined_diffusion_langevin(
@@ -1526,6 +1564,17 @@ LANDING_HTML = """
                                         <label>Window Width</label>
                                         <input type="range" id="window-width-slider" min="1" max="2500" value="350">
                                         <span id="ww-display">350</span>
+                                    </div>
+                                    <div class="control-row-col" style="margin-top: 2px;">
+                                        <label style="font-weight: 600; font-size: 0.8rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Window Presets</label>
+                                        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">
+                                            <button class="button button-ghost" id="wlpreset-soft" type="button" data-ww="400" data-wl="40" style="padding: 5px 10px; font-size: 11px; min-width: auto; height: 30px; flex: 1 1 80px;">Soft Tissue</button>
+                                            <button class="button button-ghost" id="wlpreset-lung" type="button" data-ww="1500" data-wl="-600" style="padding: 5px 10px; font-size: 11px; min-width: auto; height: 30px; flex: 1 1 80px;">Lung</button>
+                                            <button class="button button-ghost" id="wlpreset-brain" type="button" data-ww="80" data-wl="40" style="padding: 5px 10px; font-size: 11px; min-width: auto; height: 30px; flex: 1 1 80px;">Brain</button>
+                                            <button class="button button-ghost" id="wlpreset-bone" type="button" data-ww="1800" data-wl="400" style="padding: 5px 10px; font-size: 11px; min-width: auto; height: 30px; flex: 1 1 80px;">Bone</button>
+                                            <button class="button button-ghost" id="wlpreset-mediastinum" type="button" data-ww="350" data-wl="50" style="padding: 5px 10px; font-size: 11px; min-width: auto; height: 30px; flex: 1 1 80px;">Mediastinum</button>
+                                            <button class="button button-ghost" id="wlpreset-liver" type="button" data-ww="150" data-wl="30" style="padding: 5px 10px; font-size: 11px; min-width: auto; height: 30px; flex: 1 1 80px;">Liver</button>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="metadata-panel" style="padding: 0.8rem; margin: 0;">
@@ -1889,11 +1938,11 @@ LANDING_HTML = """
                                             <label style="font-weight: 600; font-size: 0.85rem; color: var(--arpa-h-primary-700); text-transform: uppercase;">Model Variant</label>
                                             <div class="radio-group-horizontal-compact" style="display: flex; gap: 1rem; margin-top: 2px;">
                                                 <label class="compact-radio-label">
-                                                    <input type="radio" name="diffusion-model-variant" value="base" checked>
+                                                    <input type="radio" name="diffusion-model-variant" value="base">
                                                     <span>Base</span>
                                                 </label>
                                                 <label class="compact-radio-label">
-                                                    <input type="radio" name="diffusion-model-variant" value="finetuned">
+                                                    <input type="radio" name="diffusion-model-variant" value="finetuned" checked>
                                                     <span>Finetuned</span>
                                                 </label>
                                             </div>
@@ -1928,6 +1977,10 @@ LANDING_HTML = """
                                                     <input type="radio" name="display-mode" value="mean">
                                                     <span>Mean</span>
                                                 </label>
+                                                <label class="compact-radio-label">
+                                                    <input type="radio" name="display-mode" value="hallucination">
+                                                    <span>Hallucination Map</span>
+                                                </label>
                                             </div>
                                         </div>
                                     </div>
@@ -1936,18 +1989,18 @@ LANDING_HTML = """
                                     <div style="display: flex; flex-direction: column; gap: 0.4rem; justify-content: center;">
                                         <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
                                             <label>Diffusion Steps</label>
-                                            <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="20">
-                                            <span id="diffusion-steps-display" class="slider-val-badge">20</span>
+                                            <input type="range" id="diffusion-steps-slider" min="5" max="50" step="5" value="50">
+                                            <span id="diffusion-steps-display" class="slider-val-badge">50</span>
                                         </div>
                                         <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
                                             <label>Max Null Noise</label>
-                                            <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="3.0">
-                                            <span id="sigma-max-display" class="slider-val-badge">1000</span>
+                                            <input type="range" id="sigma-max-slider" min="0" max="3" step="0.05" value="2.7">
+                                            <span id="sigma-max-display" class="slider-val-badge">500</span>
                                         </div>
                                         <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
                                             <label>Min Null Noise</label>
-                                            <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="0.0">
-                                            <span id="sigma-min-display" class="slider-val-badge">1</span>
+                                            <input type="range" id="sigma-min-slider" min="0" max="3" step="0.05" value="1.0">
+                                            <span id="sigma-min-display" class="slider-val-badge">10</span>
                                         </div>
                                         <div class="control-row" style="grid-template-columns: 120px 1fr 40px !important;">
                                             <label>Num Samples</label>
@@ -2049,7 +2102,10 @@ LANDING_HTML = """
                                         <span id="eval-num-patients-display" class="slider-val-badge">10</span>
                                     </div>
 
-                                    <button class="button button-primary" id="btn-run-evaluation" type="button" style="padding: 10px 22px; font-weight: 700; white-space: nowrap;">Run Benchmark</button>
+                                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                        <button class="button button-primary" id="btn-run-evaluation" type="button" style="padding: 10px 22px; font-weight: 700; white-space: nowrap;">Run Benchmark</button>
+                                        <button class="button button-stop" data-stop-button="evaluation" disabled type="button" style="padding: 10px 18px; font-weight: 700; white-space: nowrap;">Stop</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
